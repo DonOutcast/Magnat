@@ -4,4 +4,4 @@ WORKDIR /build
 
 COPY WBRequest .
 
-CMD ["/WBRequest"]
+CMD ["./WBRequest"]
