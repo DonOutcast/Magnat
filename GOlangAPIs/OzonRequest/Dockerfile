@@ -1,7 +1,8 @@
-FROM alpine
+FROM golang:alpine
 
 WORKDIR /build
 
-COPY OzonRequest .
+COPY . .
+RUN go build .
 EXPOSE 8090
 CMD ["./OzonRequest"]

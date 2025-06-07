@@ -1,7 +1,8 @@
-FROM alpine
+FROM golang:alpine
 
 WORKDIR /build
 
-COPY OzonBids .
+COPY . .
+RUN go build .
 EXPOSE 8092
 CMD ["./OzonBids"]
