@@ -1,7 +1,7 @@
 FROM golang:alpine
 
 WORKDIR /build
+COPY . .
 RUN go build .
-COPY WBRequest .
 
 CMD ["./WBRequest"]
