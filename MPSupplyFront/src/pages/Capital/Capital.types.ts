@@ -1,0 +1,16 @@
+export const CAPITAL_ASSETS = {
+    t1: { title: 'Деньги на р/с', auto: false },
+    t2: { title: 'Деньги на озон', auto: false },
+    t3: { title: 'Деньги на ВБ', auto: false },
+    t4: { title: 'Товары в пути на ФФ', auto: true },
+    t6: { title: 'В пути на Озон ТК', auto: true },
+    t7: { title: 'В пути на ВБ ТК', auto: true },
+    t8: { title: 'Остатки на Озон', auto: true },
+    t9: { title: 'Остатки на ВБ', auto: true },
+    t10: { title: 'В пути до клиента Озон', auto: true },
+    t11: { title: 'В пути до клиента ВБ', auto: true },
+    t12: { title: 'Возврат от клиента Озон', auto: false },
+    t13: { title: 'Возврат от клиента ВБ', auto: false },
+    t14: { title: 'В пути из Китая (закуп)', auto: true },
+    t15: { title: 'Товары в наличии на ФФ', auto: true },
+};

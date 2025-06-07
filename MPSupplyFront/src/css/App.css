@@ -1,0 +1,328 @@
+.Toastify__close-button {
+    color: #fff;
+    opacity: 0.5;
+}
+.Toastify__toast-theme--light {
+    color: #fff;
+    font-weight: bold;
+}
+.Toastify__toast--error {
+    background-image: linear-gradient(310deg,#ea0606,#ff3d59);
+}
+.Toastify__toast--warning {
+    background-image: linear-gradient(310deg,#f53939,#fac60b);
+}
+.Toastify__toast--success {
+    background-image: linear-gradient(310deg,#17ad37,#84dc14);
+}
+.Toastify__toast--info {
+    background-image: linear-gradient(310deg,#2152ff,#21d4fd);
+}
+.Toastify__toast-icon svg {
+    fill: #fff;
+}
+.Toastify__progress-bar {
+    background: #e9ecef;
+}
+
+.item-warehouse-position {
+    padding: 2px 10px;
+    border-top-left-radius: 16px;
+    border-bottom-right-radius: 16px;
+    position: absolute;
+    top: -12px;
+    left: -16px;
+    color: #fff;
+    font-weight: 600;
+}
+.item-title {
+    width: calc(100% - 150px);
+}
+@media (max-width: 768px) {
+    .item-title {
+        width: 100%;
+    }
+    .item-title-wrapper {
+        flex-wrap: wrap;
+    }
+}
+.item-add-btngp {
+    height: 36px;
+}
+.breadcrumb-item {
+    cursor: pointer;
+}
+.breadcrumb-item:hover {
+    color: #344767;
+}
+.serviceCard {
+    transition: 0.3s;
+    cursor: pointer;
+}
+.serviceCard:hover {
+    transform: scale(1.05);
+}
+#setConsumes .modal-body {
+    padding-bottom: 0;
+}
+#setConsumes .items {
+    height: 224px;
+    overflow: auto;
+}
+.serviceCard .priceBadge {
+    position: absolute;
+    bottom: -0.5rem;
+    right: -0.5rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: 1rem;
+    color: #fff;
+    background: linear-gradient(310deg,#f53939,#fbcf33);
+    font-weight: bold;
+}
+.mxw60 {
+    max-width: 60px;
+}
+.mxw180 {
+    max-width: 180px;
+}
+.hovtrans {
+    transition: 0.3s;
+}
+.hovtrans:hover {
+    transform: scale(1.05);
+}
+.cp {
+    cursor: pointer;
+}
+.navbar .sidenav-toggler-inner {
+    width: 30px;
+}
+.navbar .sidenav-toggler-inner .sidenav-toggler-line:not(:last-child) {
+    margin-bottom: 9px;
+}
+.animPulse{
+    animation: radial-pulse 1.5s infinite;
+}
+
+@keyframes radial-pulse {
+    0% {
+        box-shadow: 0 0 0 0px rgba(102, 102, 102, 0.5);
+    }
+
+    100% {
+        box-shadow: 0 0 0 20px rgba(255, 255, 255, 0);
+    }
+}
+.fc .fc-daygrid-day.fc-day-today {
+    background-color: #8392ab!important;
+}
+.fc .fc-daygrid-day.fc-day-today .fc-daygrid-day-number {
+    color: #FFF;
+}
+.css-lordet .fc .fc-daygrid-day-number {
+
+}
+.dropdown.dd1 .dropdown-menu:before, .dropdown.dd2 .dropdown-menu:before {
+    right: 55px;
+    left: auto;
+}
+.dropdown.dd1 .dropdown-menu {
+    top: -8px;
+    left: -110px;
+}
+.dropdown.dd2 .dropdown-menu {
+    top: -8px;
+    left: -92px;
+}
+.items_wrapper > div {
+    width: 32%;
+}
+
+@media (max-width: 768px) {
+    .items_wrapper > div {
+        width: 98%;
+    }
+}
+
+.react-datepicker__tab-loop {
+    position: fixed;
+}
+.react-datepicker-wrapper {
+    width: 100%;
+}
+.react-datepicker-popper {
+    inset: 0px auto auto 45px !important;
+}
+@media (max-width: 768px) {
+    .react-datepicker-popper {
+        inset: -185px auto auto 0px !important
+    }
+}
+
+.react-datepicker__day-name {
+    width: 2.8rem;
+}
+.react-datepicker__day {
+    position: relative;
+    text-align: left;
+    font-size: 1rem;
+    padding: 0.2rem;
+    line-height: 1rem;
+    padding-bottom: 1rem;
+    width: 3rem;
+    margin: 1px;
+    border: 1px solid #ccc
+}
+.react-datepicker__day > div {
+    position: absolute;
+    right: 2px;
+    bottom: 0;
+    color: orangered;
+}
+.react-datepicker__day--today {
+    font-weight: normal;
+    background-color: #ddd;
+    color: #000;
+    border-radius: 0;
+}
+#scanner-container {
+    position: relative;
+}
+.drawingBuffer {
+    position: absolute;
+    top: 0;
+    left: 0;
+}
+.skb {
+    background-color: #ececec;
+    border-radius: 5px;
+    box-sizing: border-box;
+    font-family: HelveticaNeue-Light,Helvetica Neue Light,Helvetica Neue,Helvetica,Arial,Lucida Grande,sans-serif;
+    overflow: hidden;
+    padding: 5px 0 0 5px;
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    user-select: none;
+    width: 220px;
+}
+.skb .hg-row {
+    display: flex;
+    margin-bottom: 5px;
+}
+.skb .hg-button {
+    margin-right: 5px;
+    align-items: center;
+    display: flex;
+    height: 60px;
+    justify-content: center;
+    width: 33.3%;
+    -webkit-tap-highlight-color: rgba(0,0,0,0);
+    background: #fff;
+    border-bottom: 1px solid #b5b5b5;
+    border-radius: 5px;
+    box-shadow: 0 0 3px -1px rgba(0,0,0,.3);
+    box-sizing: border-box;
+    cursor: pointer;
+    padding: 5px;
+}
+.skb .hg-button:active {
+    background: #ddd;
+}
+.react-calendar {
+    width: 100%;
+    border: 1px solid #d2d6da;
+    border-radius: 0.5rem;
+}
+.react-calendar__month-view__days__day {
+    position: relative;
+    line-height: 1.25rem;
+}
+.react-calendar__month-view__days__day > div {
+    color: blueviolet;
+    position: absolute;
+    right: 8px;
+    bottom: 0;
+    font-size: 0.9rem;
+}
+.react-calendar__tile--active, .react-calendar__tile--active:enabled:hover, .react-calendar__tile--active:enabled:focus {
+    background: linear-gradient(310deg,#2b2a29,#666);
+}
+.react-calendar__tile--active > div {
+    color: #ccc;
+}
+.react-calendar__tile--now {
+    background: #ddd;
+}
+.react-calendar__tile--now:enabled:hover, .react-calendar__tile--now:enabled:focus {
+    background: #e6e6e6;
+}
+.fc .fc-daygrid-day-number {
+    font-size: 1rem !important;
+}
+.fc-day-sat .fc-daygrid-day-number, .fc-day-sun .fc-daygrid-day-number {
+    color: #ea0606 !important;
+}
+.fc-day-today .fc-daygrid-day-number {
+    color: #FFF !important;
+}
+.navbar-vertical .navbar-nav .nav-item .nav-link .icon i {
+    color: #000;
+    font-size: 14px;
+}
+.navbar-vertical .navbar-nav .nav-item .nav-link.active .icon i {
+    color: #FFF;
+    opacity: 1;
+}
+.minipadding thead th {
+    padding: 0.25rem 0.25rem;
+}
+.minipadding td {
+    padding: 0.25rem 0.25rem;
+}
+input.incell {
+    appearance: textfield;
+    border: none;
+    max-width: 2rem;
+    width: fit-content;
+    text-align: center;
+}
+@media (max-width: 991.98px) {
+    .dropdown.nav-item .dropdown-menu-animation.show {
+        height: auto;
+        max-height: 250px;
+    }
+}
+.th-sticky th {
+    position: sticky;
+    top: 0;
+    background-color: #fff;
+    vertical-align: middle;
+    opacity: 1 !important;
+    z-index: 1;
+}
+
+.td-sticky-left {
+    position: sticky;
+    left: 0;
+    background-color: #fff !important;
+}
+
+.td-sticky-right {
+    position: sticky;
+    right: 0;
+    background-color: #fff !important;
+}
+html {
+    font-size: 14px;
+}
+.product-mp-icon {
+    border-radius: 0.5rem;
+    width: 2rem;
+    margin-right: 0.5rem;
+}
+.product-mp-icon.mp-icon-size-1 {
+    border-radius: 0.25rem;
+    width: 1rem;
+    margin-right: 0.25rem;
+}
