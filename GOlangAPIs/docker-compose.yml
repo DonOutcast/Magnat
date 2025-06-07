@@ -1,0 +1,22 @@
+services:
+  ozon_bids:
+    container_name: ozon_bids
+    build:
+      context: OzonBids/
+      dockerfile: Dockerfile
+    ports:
+      - 8092:8092
+  ozon_request:
+    container_name: ozon_request
+    build:
+      context: OzonRequest/
+      dockerfile: Dockerfile
+    ports:
+      - 8090:8090
+  wb_request:
+    container_name: wb_request
+    build:
+      context: WBRequest/
+      dockerfile: Dockerfile
+    ports:
+      - 8091:8091
