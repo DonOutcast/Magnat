@@ -34,31 +34,6 @@ func getCompanies(w http.ResponseWriter, req *http.Request) {
 	response(w, ids)
 }
 
-// "bid": 0,
-// "bidPrice": "string",
-// "hint": {
-// 	"campaignId": "string",
-// 	"organisationTitle": "string"
-// },
-// "imageUrl": "string",
-// "isSearchPromoAvailable": true,
-// "previousBid": {
-// 	"bid": 0,
-// 	"bidPrice": "string",
-// 	"updatedAt": "2019-08-24T14:15:22Z"
-// },
-// "previousVisibilityIndex": "string",
-// "price": "string",
-// "searchPromoStatus": true,
-// "sku": "string",
-// "sourceSku": "string",
-// "title": "string",
-// "views": {
-// 	"previousWeek": "string",
-// 	"thisWeek": "string"
-// },
-// "visibilityIndex": "string"
-
 func getSearchPromoCompanies(w http.ResponseWriter, req *http.Request) {
 	var ids []CompanyType
 
