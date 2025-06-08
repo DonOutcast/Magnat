@@ -155,14 +155,19 @@ export class ProductService {
     }
 
     async getProductListOzon(cid: number): Promise<number[]> {
-        let {data} = await firstValueFrom(
+        const clientId = await this.settingsService.get(SETTINGS_MODULE.API, SETTINGS.OZON_CLIENT_ID, cid);
+        const apiKey = await this.settingsService.get(SETTINGS_MODULE.API, SETTINGS.OZON_API_KEY, cid);
+
+        const {data} = await firstValueFrom(
             this.httpService.get(API_GO_HOSTS.SELLER_OZON + '/products', {
                 headers: {
-                    'Client-Id': await this.settingsService.get(SETTINGS_MODULE.API, SETTINGS.OZON_CLIENT_ID, cid),
-                    'Api-Key': await this.settingsService.get(SETTINGS_MODULE.API, SETTINGS.OZON_API_KEY, cid),
+                    'Client-Id': clientId,
+                    'Api-Key': apiKey,
                 },
             }),
         );
+
+        console.log(`OZON response for cid=${cid}:`, JSON.stringify(data, null, 2)); // красиво отформатировано
 
         return data;
     }
