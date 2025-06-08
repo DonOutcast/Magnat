@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"reflect"
 )
 
 type ApiGenericResult[T any] struct {
