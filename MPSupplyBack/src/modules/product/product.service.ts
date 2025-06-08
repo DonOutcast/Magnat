@@ -66,7 +66,7 @@ export class ProductService {
     }
 
     async sync(cid: number) {
-        this.logger.log(`Начало синхронизации для кабинета cid=${cid}`);
+        this.logger.log(`Начало синхронизации для кабинета cid=${cid} g`);
         const result = {
             [MP.Ozon]: await this.syncOzon(cid),
             [MP.WB]: await this.syncWB(cid),
