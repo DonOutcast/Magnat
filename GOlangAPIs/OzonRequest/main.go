@@ -155,18 +155,28 @@ type WarehouseRes struct {
 }
 
 func getWarehouses(w http.ResponseWriter, req *http.Request) {
+	log.Println("[INFO] getWarehouses: обработка запроса началась")
 
 	var warehouses []Warehouse
 
+	log.Println("[DEBUG] getWarehouses: отправка запроса к /v1/supplier/available_warehouses")
 	var result = GetRequest[any, ApiGenericResult[[]WarehouseRes]]("/v1/supplier/available_warehouses", *req)
 
 	if result.IsOk {
+		log.Printf("[INFO] getWarehouses: получено %d складов\n", len(result.Data.Result))
 		for _, row := range result.Data.Result {
 			warehouses = append(warehouses, row.Warehouse)
 		}
+	} else {
+		log.Printf("[ERROR] getWarehouses: ошибка при получении складов — %v\n", result.Error)
+		http.Error(w, "Не удалось получить склады", http.StatusInternalServerError)
+		return
 	}
 
+	log.Printf("[DEBUG] getWarehouses: отправка %d складов в ответ\n", len(warehouses))
 	response(w, warehouses)
+
+	log.Println("[INFO] getWarehouses: запрос успешно обработан")
 }
 
 func main() {
