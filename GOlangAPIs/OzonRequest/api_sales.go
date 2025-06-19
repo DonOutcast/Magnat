@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"log"
 )
 
 type ReqOrderFilter struct {
@@ -53,74 +54,125 @@ type ReqOrder struct {
 	To    string `json:"to"`
 }
 
-func getSales(w http.ResponseWriter, req *http.Request) {
-	var r ReqOrder
-	json.NewDecoder(req.Body).Decode(&r)
-
-	var orders []ResponseOrderList
-
-	var sendParams ApiReqOrder = ApiReqOrder{Dir: "asc", Filter: ReqOrderFilter{Since: r.Since, To: r.To, Status: ""}, Limit: 1000, Offset: 0, With: ReqOrderWith{AnalyticsData: true, FinancialData: false}}
-
-	i := 0
-	for i < 100 {
-		var result = PostRequest[any, ApiGenericResult[[]ResOrderList]](sendParams, "/v2/posting/fbo/list", *req)
-
-		if result.IsOk {
-			if len(result.Data.Result) == 0 {
-				break
-			}
-			for _, order := range result.Data.Result {
-				if order.Status != "cancelled" {
-					for _, product := range order.Products {
-						orders = append(orders, ResponseOrderList{CreatedAt: order.CreatedAt, Sku: product.Sku, Qty: product.Qty, WarehouseName: order.Warehouse.WarehouseName})
-					}
-				}
-			}
-			sendParams.Offset += sendParams.Limit
-			i++
-		} else {
-			break
-		}
-	}
-
-	response(w, orders)
-}
-
 type ResponseOrderDeliveryList struct {
 	Sku           uint64 `json:"sku"`
 	Qty           int    `json:"qty"`
 	WarehouseName string `json:"warehouse"`
 }
 
-func getDelivering(w http.ResponseWriter, req *http.Request) {
+func getSales(w http.ResponseWriter, req *http.Request) {
 	var r ReqOrder
-	json.NewDecoder(req.Body).Decode(&r)
+	if err := json.NewDecoder(req.Body).Decode(&r); err != nil {
+		log.Printf("Ошибка при декодировании тела запроса: %v", err)
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+	log.Printf("Запрос на getSales: от %s до %s", r.Since, r.To)
 
 	var orders []ResponseOrderList
-
-	var sendParams ApiReqOrder = ApiReqOrder{Dir: "asc", Filter: ReqOrderFilter{Since: r.Since, To: r.To, Status: ""}, Limit: 1000, Offset: 0, With: ReqOrderWith{AnalyticsData: true, FinancialData: false}}
-
-	i := 0
-	for i < 100 {
-		var result = PostRequest[any, ApiGenericResult[[]ResOrderList]](sendParams, "/v2/posting/fbo/list", *req)
-
-		if result.IsOk {
-			if len(result.Data.Result) == 0 {
-				break
-			}
-			for _, order := range result.Data.Result {
-				if order.Status == "delivering" {
-					for _, product := range order.Products {
-						orders = append(orders, ResponseOrderList{Sku: product.Sku, Qty: product.Qty, WarehouseName: order.Warehouse.WarehouseName})
-					}
-				}
-			}
-			sendParams.Offset += sendParams.Limit
-			i++
-		} else {
-			break
-		}
+	sendParams := ApiReqOrder{
+		Dir: "asc",
+		Filter: ReqOrderFilter{
+			Since:  r.Since,
+			To:     r.To,
+			Status: "",
+		},
+		Limit:  1000,
+		Offset: 0,
+		With: ReqOrderWith{
+			AnalyticsData: true,
+			FinancialData: false,
+		},
 	}
 
+	for i := 0; i < 100; i++ {
+		log.Printf("Итерация %d, Offset: %d", i, sendParams.Offset)
+		result := PostRequest[any, ApiGenericResult[[]ResOrderList]](sendParams, "/v2/posting/fbo/list", *req)
+
+		if !result.IsOk {
+			log.Printf("Ошибка в запросе: %+v", result)
+			break
+		}
+
+		if len(result.Data.Result) == 0 {
+			log.Println("Результаты закончились, выход из цикла")
+			break
+		}
+
+		for _, order := range result.Data.Result {
+			if order.Status != "cancelled" {
+				for _, product := range order.Products {
+					orders = append(orders, ResponseOrderList{
+						CreatedAt:     order.CreatedAt,
+						Sku:           product.Sku,
+						Qty:           product.Qty,
+						WarehouseName: order.Warehouse.WarehouseName,
+					})
+				}
+			}
+		}
+		sendParams.Offset += sendParams.Limit
+	}
+
+	log.Printf("Получено %d заказов", len(orders))
+	response(w, orders)
+}
+
+
+
+func getDelivering(w http.ResponseWriter, req *http.Request) {
+	var r ReqOrder
+	if err := json.NewDecoder(req.Body).Decode(&r); err != nil {
+		log.Printf("Ошибка при декодировании тела запроса: %v", err)
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+	log.Printf("Запрос на getDelivering: от %s до %s", r.Since, r.To)
+
+	var orders []ResponseOrderList
+	sendParams := ApiReqOrder{
+		Dir: "asc",
+		Filter: ReqOrderFilter{
+			Since:  r.Since,
+			To:     r.To,
+			Status: "",
+		},
+		Limit:  1000,
+		Offset: 0,
+		With: ReqOrderWith{
+			AnalyticsData: true,
+			FinancialData: false,
+		},
+	}
+
+	for i := 0; i < 100; i++ {
+		log.Printf("Итерация %d, Offset: %d", i, sendParams.Offset)
+		result := PostRequest[any, ApiGenericResult[[]ResOrderList]](sendParams, "/v2/posting/fbo/list", *req)
+
+		if !result.IsOk {
+			log.Printf("Ошибка в запросе: %+v", result)
+			break
+		}
+
+		if len(result.Data.Result) == 0 {
+			log.Println("Результаты закончились, выход из цикла")
+			break
+		}
+
+		for _, order := range result.Data.Result {
+			if order.Status == "delivering" {
+				for _, product := range order.Products {
+					orders = append(orders, ResponseOrderList{
+						Sku:           product.Sku,
+						Qty:           product.Qty,
+						WarehouseName: order.Warehouse.WarehouseName,
+					})
+				}
+			}
+		}
+		sendParams.Offset += sendParams.Limit
+	}
+
+	log.Printf("Получено %d доставляемых заказов", len(orders))
 	response(w, orders)
 }
