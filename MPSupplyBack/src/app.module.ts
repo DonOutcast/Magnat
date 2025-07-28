@@ -38,6 +38,12 @@ import { SearchPromoModule } from './modules/bids/search_promo/search_promo.modu
 import { SearchPromo } from './modules/bids/search_promo/entities/search_promo.entity';
 
 const ENV = process.env.NODE_ENV;
+console.log('NODE_ENV:', ENV);
+console.log('POSTGRES_HOST:', process.env.POSTGRES_HOST);
+console.log('POSTGRES_PORT:', process.env.POSTGRES_PORT);
+console.log('POSTGRES_USER:', process.env.POSTGRES_USER);
+console.log('POSTGRES_PASSWORD:', process.env.POSTGRES_PASSWORD);
+console.log('POSTGRES_DB:', process.env.POSTGRES_DB);
 
 @Module({
   imports: [
@@ -46,6 +52,7 @@ const ENV = process.env.NODE_ENV;
     ConfigModule.forRoot({
       envFilePath: !ENV ? '.env' : `.env.${ENV}`,
     }),
+
     SequelizeModule.forRoot({
       dialect: 'postgres',
       host: process.env.POSTGRES_HOST,
