@@ -321,33 +321,26 @@ export class StockService {
       {},
     );
 
-    // Очистка остатков
-    await this.stockRepository.update(
-      { promised_amount: 0, free_to_sell_amount: 0, reserved_amount: 0 },
-      // @ts-ignore
-      { where: { cid, productId: { [Op.in]: Object.values(productByFId) } } },
-    );
-
     const toCreateList = [];
     const toUpdateList = [];
 
     const elems = await this.getStockOnWarehousesWB(cid);
 
     elems.forEach((el) => {
-      el.warehouse_name = convertWHName(el.warehouse_name);
-      const key = [el.foreignId, el.warehouse_name].join('_');
-      if (!(key in existsByFIdWH)) {
-        if (el.foreignId in productByFId) {
-          toCreateList.push({ ...el, productId: productByFId[el.foreignId] });
+        el.warehouse_name = convertWHName(el.warehouse_name);
+        const key = [el.foreignId, el.warehouse_name].join('_');
+        if (!(key in existsByFIdWH)) {
+          if (el.foreignId in productByFId) {
+            toCreateList.push({ ...el, productId: productByFId[el.foreignId] });
+          } else {
+            // TODO: udefined stock item
+          }
         } else {
-          // TODO: udefined stock item
-        }
-      } else {
         toUpdateList.push({
           id: existsByFIdWH[key],
-          promised_amount: el.promised_amount,
-          free_to_sell_amount: el.free_to_sell_amount,
-          reserved_amount: el.reserved_amount,
+              promised_amount: el.promised_amount,
+              free_to_sell_amount: el.free_to_sell_amount,
+              reserved_amount: el.reserved_amount,
         });
       }
     });
@@ -366,9 +359,9 @@ export class StockService {
                 reserved_amount: item.reserved_amount,
               },
               { where: { id: item.id, cid } },
-            );
-          }),
-        );
+          );
+      }),
+    );
       }
     }
 
@@ -384,32 +377,26 @@ export class StockService {
   async syncOzon(cid: number) {
     const { productBySku, existsBySkuWH } = await this.getExistIds(cid);
 
-    await this.stockRepository.update(
-      { promised_amount: 0, free_to_sell_amount: 0, reserved_amount: 0 },
-      // @ts-ignore
-      { where: { cid, productId: { [Op.in]: Object.values(productBySku) } } },
-    );
-
     const elems = await this.getStockOnWarehousesOzon(cid);
 
     const toCreateList = [];
     const toUpdateList = [];
 
     elems.forEach((el) => {
-      el.warehouse_name = convertWHName(el.warehouse_name);
-      const key = [el.sku, el.warehouse_name].join('_');
-      if (!(key in existsBySkuWH)) {
-        if (el.sku in productBySku) {
-          toCreateList.push({ ...el, productId: productBySku[el.sku] });
+        el.warehouse_name = convertWHName(el.warehouse_name);
+        const key = [el.sku, el.warehouse_name].join('_');
+        if (!(key in existsBySkuWH)) {
+          if (el.sku in productBySku) {
+            toCreateList.push({ ...el, productId: productBySku[el.sku] });
+          } else {
+            // TODO: udefined stock item
+          }
         } else {
-          // TODO: udefined stock item
-        }
-      } else {
         toUpdateList.push({
           id: existsBySkuWH[key],
-          promised_amount: el.promised_amount,
-          free_to_sell_amount: el.free_to_sell_amount,
-          reserved_amount: el.reserved_amount,
+              promised_amount: el.promised_amount,
+              free_to_sell_amount: el.free_to_sell_amount,
+              reserved_amount: el.reserved_amount,
         });
       }
     });
@@ -428,9 +415,9 @@ export class StockService {
                 reserved_amount: item.reserved_amount,
               },
               { where: { id: item.id, cid } },
-            );
-          }),
-        );
+          );
+      }),
+    );
       }
     }
 
