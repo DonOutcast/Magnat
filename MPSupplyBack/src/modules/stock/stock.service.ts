@@ -81,6 +81,9 @@ export class StockService {
 
     const transaction = await this.sequelize.transaction();
 
+    const toUpdateList = [];
+    const toCreateList = [];
+
     for (const sale of salesRaw) {
       const wh = sale.warehouse;
       const avg_sale = parseInt(sale.dataValues['qtys']) / SALE_CALC_DAYS;
@@ -88,18 +91,15 @@ export class StockService {
       const needed = avg_sale == 0 ? 0 : Math.max(0, Math.ceil(avg_sale * (warehousesPeriod[wh] - stockQty / avg_sale)));
 
       if (sale.productId in stocks && wh in stocks[sale.productId]) {
-        await this.stockRepository.update(
-          { avg_sale: avg_sale, needed: isNaN(needed) ? 0 : needed },
-          {
-            where: {
-              productId: sale.productId,
-              warehouse_name: wh,
-              cid,
-            },
-          },
-        );
+        toUpdateList.push({
+          productId: sale.productId,
+          warehouse_name: wh,
+          cid,
+          avg_sale: avg_sale,
+          needed: isNaN(needed) ? 0 : needed,
+        });
       } else {
-        await this.stockRepository.create({
+        toCreateList.push({
           avg_sale: avg_sale,
           needed: isNaN(needed) ? 0 : needed,
           productId: sale.productId,
@@ -108,6 +108,33 @@ export class StockService {
           cid,
         });
       }
+    }
+
+    // Batch update для оптимизации
+    if (toUpdateList.length > 0) {
+      const batchSize = 50;
+      for (let i = 0; i < toUpdateList.length; i += batchSize) {
+        const batch = toUpdateList.slice(i, i + batchSize);
+        await Promise.all(
+          batch.map(async (item) => {
+            await this.stockRepository.update(
+              { avg_sale: item.avg_sale, needed: item.needed },
+              {
+                where: {
+                  productId: item.productId,
+                  warehouse_name: item.warehouse_name,
+                  cid: item.cid,
+                },
+              },
+            );
+          }),
+        );
+      }
+    }
+
+    // Batch create для оптимизации
+    if (toCreateList.length > 0) {
+      await this.stockRepository.bulkCreate(toCreateList);
     }
 
     await transaction.commit();
