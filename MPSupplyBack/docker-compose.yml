@@ -2,7 +2,7 @@ services:
   front_supply_db:
     container_name: front_supply_db
     hostname: front_supply_db
-    image: docker.io/library/postgres:16.4-alpine
+    image: postgres:16.9-bookworm
     environment:
       - POSTGRES_DB=postgres
       - POSTGRES_PASSWORD=postgres
