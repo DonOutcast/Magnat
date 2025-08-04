@@ -117,7 +117,7 @@ export class StockService {
           needed: isNaN(needed) ? 0 : needed,
           productId: sale.productId,
           warehouse_name: wh,
-          visible: warehousesVisible[wh],
+          visible: warehousesVisible[wh] ?? true,
           cid,
         });
       }
