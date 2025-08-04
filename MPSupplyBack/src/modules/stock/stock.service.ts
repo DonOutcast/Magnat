@@ -47,13 +47,26 @@ export class StockService {
     const SALE_CALC_DAYS = parseInt(await this.settingsService.get(SETTINGS_MODULE.CALC, SETTINGS.SALE_CALC_DAYS, cid));
     const ENABLE_CALC_COUNT = 2;
 
-    await this.stockRepository.update({ avg_sale: 0, needed: 0 }, { where: { cid, free_to_sell_amount: { [Op.gt]: ENABLE_CALC_COUNT } } });
-
     const salesRaw = await this.saleRepository.findAll({
       attributes: ['productId', 'warehouse', [sequelize.fn('SUM', sequelize.col('qty')), 'qtys']],
       group: ['productId', 'warehouse'],
       where: { cid },
     });
+
+    // Обнуляем только те записи, которые будут обновляться
+    const productIds = [...new Set(salesRaw.map(sale => sale.productId))];
+    if (productIds.length > 0) {
+      await this.stockRepository.update(
+        { avg_sale: 0, needed: 0 }, 
+        { 
+          where: { 
+            cid, 
+            productId: { [Op.in]: productIds },
+            free_to_sell_amount: { [Op.gt]: ENABLE_CALC_COUNT } 
+          } 
+        }
+      );
+    }
 
     const warehousesRaw = await this.warehouseRepository.findAll({
       attributes: [WarehouseF.NAME, WarehouseF.PERIOD_STOCK, WarehouseF.PERIOD_DELIVERY, WarehouseF.VISIBLE],
@@ -175,7 +188,7 @@ export class StockService {
 
   async calculateObsNeeded(cid: number) {
     const RESERVE_CALC_DAYS = parseInt(await this.settingsService.get(SETTINGS_MODULE.CALC, SETTINGS.RESERVE_CALC_DAYS, cid));
-
+    console.log('RESERVE_CALC_DAYS', RESERVE_CALC_DAYS);
     const obsItems = await this.obsItemRepository.findAll({
       attributes: [
         'observableId',
@@ -289,6 +302,7 @@ export class StockService {
     if (isEmpty(apiKey) || isEmpty(clientId)) return [];
 
     const SALE_CALC_DAYS = parseInt(await this.settingsService.get(SETTINGS_MODULE.CALC, SETTINGS.SALE_CALC_DAYS, cid));
+    console.log('SALE_CALC_DAYS', SALE_CALC_DAYS);
 
     const end = new Date();
     end.setHours(0, 0, 0, 0);
