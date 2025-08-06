@@ -94,63 +94,47 @@ export class StockService {
 
     const transaction = await this.sequelize.transaction();
 
-    const toUpdateList = [];
-    const toCreateList = [];
+    try {
+      for (const sale of salesRaw) {
+        const wh = sale.warehouse;
+        const avg_sale = parseInt(sale.dataValues['qtys']) / SALE_CALC_DAYS;
+        const stockQty = sale.productId in stocks && wh in stocks[sale.productId] ? stocks[sale.productId][wh] : 0;
+        const needed = avg_sale == 0 ? 0 : Math.max(0, Math.ceil(avg_sale * (warehousesPeriod[wh] - stockQty / avg_sale)));
 
-    for (const sale of salesRaw) {
-      const wh = sale.warehouse;
-      const avg_sale = parseInt(sale.dataValues['qtys']) / SALE_CALC_DAYS;
-      const stockQty = sale.productId in stocks && wh in stocks[sale.productId] ? stocks[sale.productId][wh] : 0;
-      const needed = avg_sale == 0 ? 0 : Math.max(0, Math.ceil(avg_sale * (warehousesPeriod[wh] - stockQty / avg_sale)));
-
-      if (sale.productId in stocks && wh in stocks[sale.productId]) {
-        toUpdateList.push({
-          productId: sale.productId,
-          warehouse_name: wh,
-          cid,
-          avg_sale: avg_sale,
-          needed: isNaN(needed) ? 0 : needed,
+        // Используем findOrCreate для избежания дублирования
+        const [stockItem, created] = await this.stockRepository.findOrCreate({
+          where: {
+            productId: sale.productId,
+            warehouse_name: wh,
+            cid,
+          },
+          defaults: {
+            avg_sale: avg_sale,
+            needed: isNaN(needed) ? 0 : needed,
+            visible: warehousesVisible[wh] ?? true,
+            promised_amount: 0,
+            free_to_sell_amount: 0,
+            reserved_amount: 0,
+            delivering_amount: 0,
+            maxAmount: 0,
+            maxSale: 0,
+          },
         });
-      } else {
-        toCreateList.push({
-          avg_sale: avg_sale,
-          needed: isNaN(needed) ? 0 : needed,
-          productId: sale.productId,
-          warehouse_name: wh,
-          visible: warehousesVisible[wh] ?? true,
-          cid,
-        });
+
+        // Обновляем существующую запись
+        if (!created) {
+          await stockItem.update({
+            avg_sale: avg_sale,
+            needed: isNaN(needed) ? 0 : needed,
+          });
+        }
       }
-    }
 
-    // Batch update для оптимизации
-    if (toUpdateList.length > 0) {
-      const batchSize = 50;
-      for (let i = 0; i < toUpdateList.length; i += batchSize) {
-        const batch = toUpdateList.slice(i, i + batchSize);
-        await Promise.all(
-          batch.map(async (item) => {
-            await this.stockRepository.update(
-              { avg_sale: item.avg_sale, needed: item.needed },
-              {
-                where: {
-                  productId: item.productId,
-                  warehouse_name: item.warehouse_name,
-                  cid: item.cid,
-                },
-              },
-            );
-          }),
-        );
-      }
+      await transaction.commit();
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
     }
-
-    // Batch create для оптимизации
-    if (toCreateList.length > 0) {
-      await this.stockRepository.bulkCreate(toCreateList);
-    }
-
-    await transaction.commit();
   }
 
   async calculateObsItemNeeded(cid: number) {
