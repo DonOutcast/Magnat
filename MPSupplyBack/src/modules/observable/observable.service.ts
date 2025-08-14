@@ -243,7 +243,7 @@ export class ObservableService {
 
     const { stock, warehouses } = await this.stockService.getStockArr(productIds, cid);
 
-    return {
+    const result = {
       obsItems: await Promise.all(
         obs.map((obs) => {
           const items = obs.items.map((item) => {
@@ -258,6 +258,17 @@ export class ObservableService {
       ),
       warehouses,
     };
+
+    // Сортируем товары по алфавиту (по названию продукта)
+    result.obsItems.forEach((obs) => {
+      obs.items.sort((a, b) => {
+        const nameA = a.product?.name || '';
+        const nameB = b.product?.name || '';
+        return nameA.localeCompare(nameB, 'ru', { sensitivity: 'base' });
+      });
+    });
+
+    return result;
   }
 
   async setLabel(id: number, path: string) {

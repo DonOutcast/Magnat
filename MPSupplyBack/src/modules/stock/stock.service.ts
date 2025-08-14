@@ -390,7 +390,20 @@ export class StockService {
       }
     }
 
-    await this.stockRepository.bulkCreate(toCreateList.map((el: any) => ({ ...el, cid })));
+    // Используем upsert вместо bulkCreate для предотвращения дублей
+    if (toCreateList.length > 0) {
+      for (const item of toCreateList) {
+        await this.stockRepository.upsert({
+          ...item,
+          cid,
+          visible: true, // устанавливаем видимость по умолчанию
+          avg_sale: 0,
+          needed: 0,
+          maxAmount: 0,
+          maxSale: 0,
+        });
+      }
+    }
 
     const SKUs = [...new Set(elems.map((el) => el.foreignId))];
 
@@ -446,7 +459,20 @@ export class StockService {
       }
     }
 
-    await this.stockRepository.bulkCreate(toCreateList.map((el: any) => ({ ...el, cid })));
+    // Используем upsert вместо bulkCreate для предотвращения дублей
+    if (toCreateList.length > 0) {
+      for (const item of toCreateList) {
+        await this.stockRepository.upsert({
+          ...item,
+          cid,
+          visible: true, // устанавливаем видимость по умолчанию
+          avg_sale: 0,
+          needed: 0,
+          maxAmount: 0,
+          maxSale: 0,
+        });
+      }
+    }
 
     const SKUs = [...new Set(elems.map((el) => el.sku))];
 
@@ -675,5 +701,87 @@ export class StockService {
       offerId: itemById[el.productId].offer_id,
       volume: itemById[el.productId].volume,
     }));
+  }
+
+  /**
+   * Очищает дублированные записи в таблице stock
+   * @param cid ID кабинета
+   * @returns Результат очистки
+   */
+  async cleanDuplicates(cid: number) {
+    const transaction = await this.sequelize.transaction();
+    
+    try {
+      // Находим дублированные записи
+      const duplicates = await this.stockRepository.findAll({
+        attributes: [
+          StockF.PRODUCT_ID,
+          StockF.WAREOUSE_NAME,
+          [sequelize.fn('COUNT', sequelize.col('*')), 'count'],
+          [sequelize.fn('MAX', sequelize.col(StockF.ID)), 'maxId']
+        ],
+        group: [StockF.PRODUCT_ID, StockF.WAREOUSE_NAME, StockF.CID],
+        having: sequelize.literal('COUNT(*) > 1'),
+        where: { cid },
+        raw: true
+      }) as any[];
+
+      let cleanedCount = 0;
+      
+      for (const duplicate of duplicates) {
+        // Удаляем все записи кроме самой новой (с максимальным ID)
+        const deletedCount = await this.stockRepository.destroy({
+          where: {
+            cid,
+            productId: duplicate.productId,
+            warehouse_name: duplicate.warehouse_name,
+            id: { [Op.ne]: duplicate.maxId }
+          },
+          transaction
+        });
+        
+        cleanedCount += deletedCount;
+      }
+
+      await transaction.commit();
+      
+      return {
+        message: 'Дублированные записи успешно очищены',
+        duplicatesFound: duplicates.length,
+        recordsCleaned: cleanedCount
+      };
+      
+    } catch (error) {
+      await transaction.rollback();
+      throw new Error(`Ошибка при очистке дублей: ${error.message}`);
+    }
+  }
+
+  /**
+   * Проверяет наличие дублированных записей
+   * @param cid ID кабинета
+   * @returns Информация о дублях
+   */
+  async checkDuplicates(cid: number) {
+    const duplicates = await this.stockRepository.findAll({
+      attributes: [
+        StockF.PRODUCT_ID,
+        StockF.WAREOUSE_NAME,
+        [sequelize.fn('COUNT', sequelize.col('*')), 'count']
+      ],
+      group: [StockF.PRODUCT_ID, StockF.WAREOUSE_NAME, StockF.CID],
+      having: sequelize.literal('COUNT(*) > 1'),
+      where: { cid },
+      raw: true
+    }) as any[];
+
+    return {
+      totalDuplicates: duplicates.length,
+      duplicates: duplicates.map(d => ({
+        productId: d.productId,
+        warehouse: d.warehouse_name,
+        count: parseInt(d.count)
+      }))
+    };
   }
 }
