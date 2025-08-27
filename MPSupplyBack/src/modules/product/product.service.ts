@@ -77,6 +77,8 @@ export class ProductService {
 
     async syncOzon(cid: number) {
         const productIds: number[] = await this.getProductListOzon(cid);
+        const productIdsNum = (productIds ?? []).map(Number).filter(Number.isFinite);
+        console.log(`productIds total=${productIdsNum.length} sample=${productIdsNum.slice(0,10).join(',')}`);
 
         if (productIds === null || productIds.length === 0) {
             return {total: 0, new: 0};
@@ -88,8 +90,6 @@ export class ProductService {
                 where: {cid, mp: MP.Ozon},
             })
         ).map((el) => +el.foreignId);
-        const productIdsNum = (productIds ?? []).map(Number).filter(Number.isFinite);
-        console.log(`productIds total=${productIdsNum.length} sample=${productIdsNum.slice(0,10).join(',')}`);
         console.log(`existIds   total=${existIds.length} sample=${existIds.slice(0,10).join(',')}`);
 
 
