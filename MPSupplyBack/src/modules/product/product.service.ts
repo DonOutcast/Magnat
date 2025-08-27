@@ -89,13 +89,13 @@ export class ProductService {
             })
         ).map((el) => +el.foreignId);
         const productIdsNum = (productIds ?? []).map(Number).filter(Number.isFinite);
-        this.logger.log(`productIds total=${productIdsNum.length} sample=${productIdsNum.slice(0,10).join(',')}`);
-        this.logger.log(`existIds   total=${existIds.length} sample=${existIds.slice(0,10).join(',')}`);
+        console.log(`productIds total=${productIdsNum.length} sample=${productIdsNum.slice(0,10).join(',')}`);
+        console.log(`existIds   total=${existIds.length} sample=${existIds.slice(0,10).join(',')}`);
 
 
         const newIds = productIds.filter((el) => existIds.indexOf(el) === -1);
         const oldIds = productIds.filter((el) => existIds.indexOf(el) !== -1);
-        this.logger.log(`newIds=${newIds.length}, oldIds=${oldIds.length}`);
+        console.log(`newIds=${newIds.length}, oldIds=${oldIds.length}`);
 
 
         if (newIds.length > 0) {
