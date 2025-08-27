@@ -110,6 +110,7 @@ export class ProductService {
                         foreignId: el.id,
                         id: null,
                         mp: MP.Ozon,
+                        inArchive: false,
                     })),
                 );
             }
@@ -126,6 +127,7 @@ export class ProductService {
                             offer_id: el.offer_id,
                             barcode: el.barcodes[0],
                             sku: el.sources[0].sku,
+                            inArchive: false,
                         },
                         {where: {foreignId: el.id, cid, mp: MP.Ozon}},
                     );
