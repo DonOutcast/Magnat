@@ -386,7 +386,7 @@ const OrderFullFillDetail = () => {
                                                             {item.obsItem.barcodePath
                                                                 ? '{"t": "s", "v": "' +
                                                                   item.obsItem.product.sku +
-                                                                  '", "l": {"Target": "https://mpsales.endlessmind.space/api/observable/label/' +
+                                                                  '", "l": {"Target": "http://46.254.16.111/api/observable/label/' +
                                                                   item.obsItemId +
                                                                   '"}}'
                                                                 : item.obsItem.product.sku}
