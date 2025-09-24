@@ -14,6 +14,14 @@ import { ORDERBY } from 'src/main.types';
 import sequelize from 'sequelize';
 import { SearchPromo } from '../bids/search_promo/entities/search_promo.entity';
 
+function csvCell(v: any): string {
+    const s = (v ?? '').toString();
+    if (/[;"\n\r]/.test(s)) {
+        return `"${s.replace(/"/g, '""')}"`;
+    }
+    return s;
+}
+
 @Injectable()
 export class ObservableService {
   constructor(
@@ -213,6 +221,47 @@ export class ObservableService {
     utils.book_append_sheet(wb, ws, 'Data');
     var buf = write(wb, { type: 'buffer', bookType: 'xlsx' });
     return new StreamableFile(buf);
+  }
+
+  async generateObservableCVS(cid: number) {
+      const observables = await this.observableRepository.findAll({
+          where: { cid },
+          order: [['supplierId', 'ASC'], ['id', 'ASC'], ['items', 'packing', 'ASC']],
+          include: [
+              { model: Supplier },
+              { model: ObservableItem, include: [Product] },
+          ],
+      });
+      const header = [
+          'Поставщик',
+          'Наименование из счёта',
+          'Цена',
+          'Площадка',
+          'Наименование в Ozon Seller',
+          'Артикул',
+          'SKU',
+          'Фасовка',
+      ];
+      const lines: string[] = [header.join(';')];
+      for (const o of observables) {
+          for (const it of o.items ?? []) {
+              const row = [
+                  o.supplier?.name ?? '',
+                  o.name ?? '',
+                  'Ozon',
+                  (o.price ?? 0).toString().replace('.', ','), // возьмите, где актуальнее
+                  it.product?.name ?? '',
+                  it.product?.offer_id ?? '',
+                  it.product?.sku ?? '',
+                  it.packing ?? '',
+              ].map(csvCell);
+
+              lines.push(row.join(';'));
+          }
+      }
+      const csvWithBom = '\uFEFF' + lines.join('\n');
+      const buf = Buffer.from(csvWithBom, 'utf8');
+      return new StreamableFile(buf);
   }
 
   async findBySupplier(id: number, cid: number) {

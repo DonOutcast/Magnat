@@ -59,6 +59,17 @@ export default class ObservableRAPI {
             FileDownload(response.data, 'Supplies.xlsx');
         });
     }
+    static generateObservableCSV() {
+        axios(
+            {
+                url: 'observable/observableCsv',
+                method: 'GET',
+                responseType: 'blob',
+            }
+        ).then(response => {
+            FileDownload(response.data, 'report.xlsx');
+        })
+    }
 
     static getSupplierItems(id) {
         return sendReq('observable/supplier/' + id);

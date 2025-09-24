@@ -105,6 +105,11 @@ const OrdersEdit = () => {
                             Скачать CSV
                         </button>
                     </div>
+                    <div className="ms-3">
+                        <button className="btn btn-icon bg-gradient-secondary" onClick={ObservableRAPI.generateObservableCSV}>
+                            Скчать отчет CSV
+                        </button>
+                    </div>
                     {pagination.max !== 1 &&
                         <div className="dataTable-wrapper ms-auto">
                             <div className="dataTable-bottom">

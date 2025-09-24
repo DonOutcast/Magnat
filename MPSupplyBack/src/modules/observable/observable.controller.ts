@@ -130,6 +130,12 @@ export class ObservableController {
     return this.observableService.generateCSV2(cid);
   }
 
+  @Get('observableCsv')
+  @Header('Content-Disposition', 'attachment; filename="SheetJSNest.csv"')
+  async downloadObservableCSV(@User('cid') cid: number): Promise<StreamableFile>{
+      return this.observableService.generateObservableCVS(cid);
+    }
+
   @Get(':id/analytics')
   findOneAnalytics(@Param('id') id: string, @User('cid') cid: number) {
     return this.observableService.findOneAnalytics(+id, cid);
