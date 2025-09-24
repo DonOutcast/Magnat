@@ -133,7 +133,7 @@ export class ObservableController {
   @Get('observableCsv')
   @Header('Content-Disposition', 'attachment; filename="SheetJSNest.csv"')
   async downloadObservableCSV(@User('cid') cid: number): Promise<StreamableFile>{
-      return this.observableService.generateObservableCVS(cid);
+      return this.observableService.generateObservableCSV(cid);
     }
 
   @Get(':id/analytics')

@@ -15,6 +15,19 @@ import sequelize from 'sequelize';
 import { SearchPromo } from '../bids/search_promo/entities/search_promo.entity';
 
 
+function autoColWidths(aoa: any[][]) {
+    const widths = aoa.reduce<number[]>((acc, row) => {
+        row.forEach((val, i) => {
+            const s: string = val == null ? '' : String(val);
+            const len = s.length;
+            acc[i] = Math.max(acc[i] || 10, len + 2);
+        });
+        return acc;
+    }, []);
+    return widths.map(w => ({ wch: w }));
+}
+
+
 @Injectable()
 export class ObservableService {
   constructor(
@@ -216,50 +229,75 @@ export class ObservableService {
     return new StreamableFile(buf);
   }
 
-  async generateObservableCVS(cid: number) {
-      const observables = await this.observableRepository.findAll({
-          where: { cid },
-          order: [['supplierId', 'ASC'], ['id', 'ASC'], ['items', 'packing', 'ASC']],
-          include: [
-              { model: Supplier },
-              { model: ObservableItem, include: [Product] },
-          ],
-      });
-      const header = [
-          'Поставщик',
-          'Наименование из счёта',
-          'Цена',
-          'Площадка',
-          'Наименование в Ozon Seller',
-          'Артикул',
-          'SKU',
-          'Фасовка',
-      ];
-      const rows: any[][] = [];
-      for (const o of observables) {
-          for (const it of o.items ?? []) {
-              const price =  o.price ?? 0;
-              const platform = 'Ozon';
+    async generateObservableCSV(cid: number) {
+        const observables = await this.observableRepository.findAll({
+            where: { cid },
+            order: [['supplierId', 'ASC'], ['id', 'ASC'], ['items', 'packing', 'ASC']],
+            include: [
+                { model: Supplier },
+                { model: ObservableItem, include: [Product] },
+            ],
+        });
 
-              rows.push([
-                  o.supplier?.name ?? '',
-                  o.name ?? '',
-                  Number(price),
-                  platform,
-                  it.product?.name ?? '',
-                  it.product?.offer_id ?? '',
-                  it.product?.sku ?? '',
-                  it.packing ?? '',
-              ]);
-          }
-      }
-      const ws = utils.aoa_to_sheet([header, ...rows]);
-      const wb = utils.book_new();
-      utils.book_append_sheet(wb, ws, 'Observables');
+        const header = [
+            'Поставщик',
+            'Наименование из счёта',
+            'Цена',
+            'Площадка',
+            'Наименование в Ozon Seller',
+            'Артикул',
+            'SKU',
+            'Фасовка',
+        ];
 
-      const buf = write(wb, { type: 'buffer', bookType: 'xlsx' });
-      return new StreamableFile(buf);
-  }
+        const aoa: any[][] = [header];
+        const merges: { s: { r: number; c: number }; e: { r: number; c: number } }[] = [];
+
+        const bySupplier = new Map<number, typeof observables>();
+        observables.forEach(o => {
+            const key = o.supplierId ?? -1;
+            const arr = bySupplier.get(key) || [];
+            arr.push(o);
+            bySupplier.set(key, arr);
+        });
+
+        for (const [, group] of bySupplier) {
+            let startRowForMerge = aoa.length;
+            let rowsAdded = 0;
+
+            for (const o of group) {
+                for (const it of o.items ?? []) {
+                    aoa.push([
+                        o.supplier?.name ?? '',
+                        o.name ?? '',
+                        Number(o.price ?? 0),
+                        'Ozon',
+                        it.product?.name ?? '',
+                        it.product?.offer_id ?? '',
+                        it.product?.sku ?? '',
+                        it.packing ?? '',
+                    ]);
+                    rowsAdded++;
+                }
+            }
+
+            if (rowsAdded > 1) {
+                merges.push({
+                    s: { r: startRowForMerge, c: 0 },
+                    e: { r: startRowForMerge + rowsAdded - 1, c: 0 },
+                });
+            }
+        }
+
+        const ws = utils.aoa_to_sheet(aoa);
+        ws['!merges'] = merges;
+        ws['!cols'] = autoColWidths(aoa);
+
+        const wb = utils.book_new();
+        utils.book_append_sheet(wb, ws, 'Отчёт');
+        const buf = write(wb, { type: 'buffer', bookType: 'xlsx' });
+        return new StreamableFile(buf);
+    }
 
   async findBySupplier(id: number, cid: number) {
     return await this.observableRepository.findAll({
