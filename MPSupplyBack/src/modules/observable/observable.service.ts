@@ -14,13 +14,6 @@ import { ORDERBY } from 'src/main.types';
 import sequelize from 'sequelize';
 import { SearchPromo } from '../bids/search_promo/entities/search_promo.entity';
 
-function csvCell(v: any): string {
-    const s = (v ?? '').toString();
-    if (/[;"\n\r]/.test(s)) {
-        return `"${s.replace(/"/g, '""')}"`;
-    }
-    return s;
-}
 
 @Injectable()
 export class ObservableService {
@@ -242,25 +235,29 @@ export class ObservableService {
           'SKU',
           'Фасовка',
       ];
-      const lines: string[] = [header.join(';')];
+      const rows: any[][] = [];
       for (const o of observables) {
           for (const it of o.items ?? []) {
-              const row = [
+              const price =  o.price ?? 0;
+              const platform = 'Ozon';
+
+              rows.push([
                   o.supplier?.name ?? '',
                   o.name ?? '',
-                  'Ozon',
-                  (o.price ?? 0).toString().replace('.', ','), // возьмите, где актуальнее
+                  Number(price),
+                  platform,
                   it.product?.name ?? '',
                   it.product?.offer_id ?? '',
                   it.product?.sku ?? '',
                   it.packing ?? '',
-              ].map(csvCell);
-
-              lines.push(row.join(';'));
+              ]);
           }
       }
-      const csvWithBom = '\uFEFF' + lines.join('\n');
-      const buf = Buffer.from(csvWithBom, 'utf8');
+      const ws = utils.aoa_to_sheet([header, ...rows]);
+      const wb = utils.book_new();
+      utils.book_append_sheet(wb, ws, 'Observables');
+
+      const buf = write(wb, { type: 'buffer', bookType: 'xlsx' });
       return new StreamableFile(buf);
   }
 
