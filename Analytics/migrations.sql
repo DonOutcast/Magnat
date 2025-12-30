@@ -206,9 +206,9 @@ CREATE INDEX IF NOT EXISTS INDEX  idx_stock_turnover_grade ON stock(turnover_gra
 );
 
 -- Индексы
-CREATE IF NOT EXISTS INDEX idx_ads_aggregated_campaign_id ON ads_aggregated(campaign_id);
-CREATE IF NOT EXISTS INDEX idx_ads_aggregated_article ON ads_aggregated(article);
-CREATE IF NOT EXISTS INDEX idx_ads_aggregated_stats_date ON ads_aggregated(stats_date);
+CREATE INDEX IF NOT EXISTS  idx_ads_aggregated_campaign_id ON ads_aggregated(campaign_id);
+CREATE INDEX IF NOT EXISTS  idx_ads_aggregated_article ON ads_aggregated(article);
+CREATE INDEX IF NOT EXISTS  idx_ads_aggregated_stats_date ON ads_aggregated(stats_date);
 
 
 CREATE TABLE IF NOT EXISTS ads_orders (
@@ -240,12 +240,12 @@ CREATE TABLE IF NOT EXISTS ads_orders (
 );
 
 -- Индексы
-CREATE IF NOT EXISTS INDEX idx_ads_orders_order_date ON ads_orders(order_date);
-CREATE IF NOT EXISTS INDEX idx_ads_orders_sku ON ads_orders(sku);
-CREATE IF NOT EXISTS INDEX idx_ads_orders_promoted_sku ON ads_orders(promoted_sku);
-CREATE IF NOT EXISTS INDEX idx_ads_orders_article ON ads_orders(article);
-CREATE IF NOT EXISTS INDEX idx_ads_orders_order_source ON ads_orders(order_source);
-CREATE IF NOT EXISTS INDEX idx_ads_orders_order_number ON ads_orders(order_number);
+CREATE INDEX IF NOT EXISTS  idx_ads_orders_order_date ON ads_orders(order_date);
+CREATE INDEX IF NOT EXISTS  idx_ads_orders_sku ON ads_orders(sku);
+CREATE INDEX IF NOT EXISTS  idx_ads_orders_promoted_sku ON ads_orders(promoted_sku);
+CREATE INDEX IF NOT EXISTS  idx_ads_orders_article ON ads_orders(article);
+CREATE INDEX IF NOT EXISTS  idx_ads_orders_order_source ON ads_orders(order_source);
+CREATE INDEX IF NOT EXISTS  idx_ads_orders_order_number ON ads_orders(order_number);
 
 
 
