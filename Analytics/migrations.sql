@@ -170,10 +170,10 @@ CREATE TABLE IF NOT EXISTS  stock (
 
 -- Индексы
 CREATE INDEX IF NOT EXISTS idx_stock_export_date ON stock(export_date);
-CREATE INDEX IF NOT EXISTS INDEX idx_stock_sku ON stock(sku);
-CREATE INDEX IF NOT EXISTS INDEX idx_stock_warehouse_id ON stock(warehouse_id);
-CREATE INDEX IF NOT EXISTS INDEX idx_stock_sku_warehouse ON stock(sku, warehouse_id);
-CREATE INDEX IF NOT EXISTS INDEX idx_stock_turnover_grade ON stock(turnover_grade);
+CREATE INDEX IF NOT EXISTS idx_stock_sku ON stock(sku);
+CREATE INDEX IF NOT EXISTS idx_stock_warehouse_id ON stock(warehouse_id);
+CREATE INDEX IF NOT EXISTS idx_stock_sku_warehouse ON stock(sku, warehouse_id);
+CREATE INDEX IF NOT EXISTS idx_stock_turnover_grade ON stock(turnover_grade);
 
 
 
