@@ -55,13 +55,13 @@ type StockItem struct {
 	WaitingDocsStockCount    *int64 `json:"waiting_docs_stock_count"`
 	ExpiringStockCount       *int64 `json:"expiring_stock_count"`
 	TransitStockCount        *int64 `json:"transit_stock_count"`
-	TransitDeficitStockCount *int64 `json:"transit_deficit_stock_count"`
-	DeficitStockCount        *int64 `json:"deficit_stock_count"`
+	TransitDeficitStockCount *int64 `json:"transit_defect_stock_count"`
+	DeficitStockCount        *int64 `json:"stock_defect_stock_count"`
 	ExcessStockCount         *int64 `json:"excess_stock_count"`
 	OtherStockCount          *int64 `json:"other_stock_count"`
 	RequestedStockCount      *int64 `json:"requested_stock_count"`
-	ReturnFromCustomerCount  *int64 `json:"return_from_customer_count"`
-	ReturnToSellerCount      *int64 `json:"return_to_seller_count"`
+	ReturnFromCustomerCount  *int64 `json:"return_from_customer_stock_count"`
+	ReturnToSellerCount      *int64 `json:"return_to_seller_stock_count"`
 }
 
 func mustEnv(k string) string {
@@ -156,8 +156,8 @@ func upsertStocks(ctx context.Context, db *sql.DB, exportDate time.Time, items [
 			cluster_id, cluster_name,
 			item_tag, adv_days_without_sales, turnover_grade,
 			available_stock_count, valid_stock_count, waiting_docs_stock_count, expiring_stock_count,
-			transit_stock_count, transit_deficit_stock_count, deficit_stock_count, excess_stock_count,
-			other_stock_count, requested_stock_count, return_from_customer_count, return_to_seller_count,
+			transit_stock_count, transit_defect_stock_count, stock_defect_stock_count, excess_stock_count,
+			other_stock_count, requested_stock_count, return_from_customer_stock_count, return_to_seller_stock_count,
 			id_cluster, adv_cluster, turnover_cluster, days_without_sales_cluster
 		)
 		VALUES (
@@ -186,13 +186,13 @@ func upsertStocks(ctx context.Context, db *sql.DB, exportDate time.Time, items [
 			waiting_docs_stock_count = EXCLUDED.waiting_docs_stock_count,
 			expiring_stock_count = EXCLUDED.expiring_stock_count,
 			transit_stock_count = EXCLUDED.transit_stock_count,
-			transit_deficit_stock_count = EXCLUDED.transit_deficit_stock_count,
-			deficit_stock_count = EXCLUDED.deficit_stock_count,
+			transit_defect_stock_count = EXCLUDED.stock_defect_stock_count,
+			stock_defect_stock_count = EXCLUDED.stock_defect_stock_count,
 			excess_stock_count = EXCLUDED.excess_stock_count,
 			other_stock_count = EXCLUDED.other_stock_count,
 			requested_stock_count = EXCLUDED.requested_stock_count,
-			return_from_customer_count = EXCLUDED.return_from_customer_count,
-			return_to_seller_count = EXCLUDED.return_to_seller_count,
+			return_from_customer_stock_count = EXCLUDED.return_from_customer_stock_count,
+			return_to_seller_stock_count = EXCLUDED.return_to_seller_stock_count,
 
 			id_cluster = EXCLUDED.id_cluster,
 			adv_cluster = EXCLUDED.adv_cluster,
