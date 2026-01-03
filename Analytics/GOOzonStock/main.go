@@ -39,29 +39,85 @@ type StockItem struct {
 
 	WarehouseID   int64  `json:"warehouse_id"`
 	WarehouseName string `json:"warehouse_name"`
-	ClusterID     string `json:"cluster_id"`
-	ClusterName   string `json:"cluster_name"`
 
-	ItemTag              string `json:"item_tag"`
-	AdvDaysWithoutSales  *int64 `json:"adv_days_without_sales"`
-	TurnoverGrade        string `json:"turnover_grade"`
-	IDCluster            string `json:"id_cluster"`
-	AdvCluster           string `json:"adv_cluster"`
-	TurnoverCluster      string `json:"turnover_cluster"`
-	DaysWithoutSalesClst string `json:"days_without_sales_cluster"`
+	ClusterID   int64  `json:"cluster_id"`
+	ClusterName string `json:"cluster_name"`
 
-	AvailableStockCount      *int64 `json:"available_stock_count"`
-	ValidStockCount          *int64 `json:"valid_stock_count"`
-	WaitingDocsStockCount    *int64 `json:"waiting_docs_stock_count"`
-	ExpiringStockCount       *int64 `json:"expiring_stock_count"`
-	TransitStockCount        *int64 `json:"transit_stock_count"`
-	TransitDeficitStockCount *int64 `json:"transit_defect_stock_count"`
-	DeficitStockCount        *int64 `json:"stock_defect_stock_count"`
-	ExcessStockCount         *int64 `json:"excess_stock_count"`
-	OtherStockCount          *int64 `json:"other_stock_count"`
-	RequestedStockCount      *int64 `json:"requested_stock_count"`
-	ReturnFromCustomerCount  *int64 `json:"return_from_customer_stock_count"`
-	ReturnToSellerCount      *int64 `json:"return_to_seller_stock_count"`
+	ItemTags []string `json:"item_tags"`
+
+	Ads              *float64 `json:"ads"`
+	DaysWithoutSales *int64   `json:"days_without_sales"`
+	TurnoverGrade    string   `json:"turnover_grade"`
+	IDC              *int64   `json:"idc"`
+
+	AvailableStockCount     *int64 `json:"available_stock_count"`
+	ValidStockCount         *int64 `json:"valid_stock_count"`
+	WaitingDocsStockCount   *int64 `json:"waiting_docs_stock_count"`
+	ExpiringStockCount      *int64 `json:"expiring_stock_count"`
+	TransitDefectStockCount *int64 `json:"transit_defect_stock_count"`
+	StockDefectStockCount   *int64 `json:"stock_defect_stock_count"`
+	ExcessStockCount        *int64 `json:"excess_stock_count"`
+	OtherStockCount         *int64 `json:"other_stock_count"`
+	RequestedStockCount     *int64 `json:"requested_stock_count"`
+	TransitStockCount       *int64 `json:"transit_stock_count"`
+	ReturnFromCustomerCount *int64 `json:"return_from_customer_stock_count"`
+	ReturnToSellerCount     *int64 `json:"return_to_seller_stock_count"`
+
+	IDCCluster              *int64   `json:"idc_cluster"`
+	AdsCluster              *float64 `json:"ads_cluster"`
+	TurnoverGradeCluster    string   `json:"turnover_grade_cluster"`
+	DaysWithoutSalesCluster *int64   `json:"days_without_sales_cluster"`
+}
+
+func nzFloat(p *float64) float64 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+func tagsToStr(tags []string) sql.NullString {
+	if len(tags) == 0 {
+		return sql.NullString{Valid: false}
+	}
+	s := strings.Join(tags, ",")
+	if len(s) > 100 { // item_tag varchar(100)
+		s = s[:100]
+	}
+	return sql.NullString{String: s, Valid: true}
+}
+
+func str50FromInt64(v int64) sql.NullString {
+	if v == 0 {
+		return sql.NullString{Valid: false}
+	}
+	s := fmt.Sprintf("%d", v)
+	if len(s) > 50 {
+		s = s[:50]
+	}
+	return sql.NullString{String: s, Valid: true}
+}
+
+func str50FromInt64Ptr(v *int64) sql.NullString {
+	if v == nil || *v == 0 {
+		return sql.NullString{Valid: false}
+	}
+	s := fmt.Sprintf("%d", *v)
+	if len(s) > 50 {
+		s = s[:50]
+	}
+	return sql.NullString{String: s, Valid: true}
+}
+
+func str50FromFloat64Ptr(v *float64) sql.NullString {
+	if v == nil {
+		return sql.NullString{Valid: false}
+	}
+	s := fmt.Sprintf("%.6f", *v) // хватит точности, и не раздуваем строку
+	if len(s) > 50 {
+		s = s[:50]
+	}
+	return sql.NullString{String: s, Valid: true}
 }
 
 func mustEnv(k string) string {
@@ -186,7 +242,7 @@ func upsertStocks(ctx context.Context, db *sql.DB, exportDate time.Time, items [
 			waiting_docs_stock_count = EXCLUDED.waiting_docs_stock_count,
 			expiring_stock_count = EXCLUDED.expiring_stock_count,
 			transit_stock_count = EXCLUDED.transit_stock_count,
-			transit_defect_stock_count = EXCLUDED.stock_defect_stock_count,
+			transit_defect_stock_count = EXCLUDED.transit_defect_stock_count,
 			stock_defect_stock_count = EXCLUDED.stock_defect_stock_count,
 			excess_stock_count = EXCLUDED.excess_stock_count,
 			other_stock_count = EXCLUDED.other_stock_count,
@@ -214,15 +270,30 @@ func upsertStocks(ctx context.Context, db *sql.DB, exportDate time.Time, items [
 			exportDate,
 			it.SKU, nullStr(it.Name), nullStr(it.OfferID),
 			it.WarehouseID, nullStr(it.WarehouseName),
-			nullStr(it.ClusterID), nullStr(it.ClusterName),
-			nullStr(it.ItemTag), nz(it.AdvDaysWithoutSales), nullStr(it.TurnoverGrade),
+
+			// В БД cluster_id varchar(50), поэтому сохраняем как строку
+			str50FromInt64(it.ClusterID),
+			nullStr(it.ClusterName),
+
+			// item_tag varchar(100): кладём item_tags как CSV
+			tagsToStr(it.ItemTags),
+
+			// adv_days_without_sales integer: кладём days_without_sales
+			nz(it.DaysWithoutSales),
+
+			nullStr(it.TurnoverGrade),
 
 			nz(it.AvailableStockCount), nz(it.ValidStockCount), nz(it.WaitingDocsStockCount), nz(it.ExpiringStockCount),
-			nz(it.TransitStockCount), nz(it.TransitDeficitStockCount), nz(it.DeficitStockCount), nz(it.ExcessStockCount),
+			nz(it.TransitStockCount), nz(it.TransitDefectStockCount), nz(it.StockDefectStockCount), nz(it.ExcessStockCount),
 			nz(it.OtherStockCount), nz(it.RequestedStockCount), nz(it.ReturnFromCustomerCount), nz(it.ReturnToSellerCount),
 
-			nullStr(it.IDCluster), nullStr(it.AdvCluster), nullStr(it.TurnoverCluster), nullStr(it.DaysWithoutSalesClst),
+			// последние 4 поля в БД varchar(50) — кладём туда кластерные метрики строкой
+			str50FromInt64Ptr(it.IDCCluster),
+			str50FromFloat64Ptr(it.AdsCluster),
+			nullStr(it.TurnoverGradeCluster),
+			str50FromInt64Ptr(it.DaysWithoutSalesCluster),
 		)
+
 		if err != nil {
 			return fmt.Errorf("insert failed sku=%d wh=%d: %w", it.SKU, it.WarehouseID, err)
 		}
