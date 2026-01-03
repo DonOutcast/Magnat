@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -24,7 +25,7 @@ type OzonClient struct {
 }
 
 type StocksRequest struct {
-	SKUs []int64 `json:"skus"`
+	SKUs []int64 `json:"result"`
 }
 
 type StocksResponse struct {
@@ -95,17 +96,18 @@ func (c *OzonClient) FetchStocks(ctx context.Context, skus []int64) ([]StockItem
 	}
 	defer resp.Body.Close()
 
+	raw, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var raw bytes.Buffer
-		_, _ = raw.ReadFrom(resp.Body)
-		return nil, fmt.Errorf("ozon http %d: %s", resp.StatusCode, raw.String())
+		return nil, fmt.Errorf("ozon http %d: %s", resp.StatusCode, string(raw))
 	}
 
 	var out StocksResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("json decode error: %w, raw=%s", err, string(raw))
 	}
-	return out.Result, nil
+
+	return out.Items, nil
 }
 
 // берём sku из products за конкретную дату
