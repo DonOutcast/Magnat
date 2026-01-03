@@ -25,7 +25,7 @@ type OzonClient struct {
 }
 
 type StocksRequest struct {
-	SKUs []int64 `json:"result"`
+	Skus []int64 `json:"skus"`
 }
 
 type StocksResponse struct {
@@ -81,7 +81,7 @@ func nz(p *int64) int64 {
 }
 
 func (c *OzonClient) FetchStocks(ctx context.Context, skus []int64) ([]StockItem, error) {
-	reqBody, _ := json.Marshal(StocksRequest{SKUs: skus})
+	reqBody, _ := json.Marshal(StocksRequest{Skus: skus})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ozonStocksEndpoint, bytes.NewReader(reqBody))
 	if err != nil {
 		return nil, err
@@ -305,6 +305,10 @@ func main() {
 			panic(err)
 		}
 		fmt.Println("  received items:", len(items))
+		//for _, row := range rows {
+		//	b, _ := json.MarshalIndent(row, "", "  ")
+		//	fmt.Println(string(b))
+		//}
 
 		if len(items) > 0 {
 			// debug sample
