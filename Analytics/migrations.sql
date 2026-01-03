@@ -174,7 +174,7 @@ CREATE INDEX IF NOT EXISTS idx_stock_sku ON stock(sku);
 CREATE INDEX IF NOT EXISTS idx_stock_warehouse_id ON stock(warehouse_id);
 CREATE INDEX IF NOT EXISTS idx_stock_sku_warehouse ON stock(sku, warehouse_id);
 CREATE INDEX IF NOT EXISTS idx_stock_turnover_grade ON stock(turnover_grade);
-
+CREATE UNIQUE INDEX IF NOT EXISTS ux_stock_export_sku_wh ON public.stock (export_date, sku, warehouse_id);
 
 
 
