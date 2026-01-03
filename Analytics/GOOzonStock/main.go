@@ -29,7 +29,7 @@ type StocksRequest struct {
 }
 
 type StocksResponse struct {
-	Result []StockItem `json:"result"`
+	Items []StockItem `json:"items"`
 }
 
 type StockItem struct {
