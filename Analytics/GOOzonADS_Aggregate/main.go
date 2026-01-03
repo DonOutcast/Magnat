@@ -245,7 +245,7 @@ func aggregateDaily(exportDate time.Time, csvBytes []byte) ([]AdsAggRow, error) 
 
 		// campaign_id
 		cidStr := pick(row,
-			"campaign_id", "campaignid", "idcampaign", "idкампании", "кампанияid",
+			"id", "campaign_id", "campaignid", "idcampaign", "idкампании", "кампанияid",
 		)
 		cid, ok := parseInt64(cidStr)
 		if !ok || cid == 0 {
