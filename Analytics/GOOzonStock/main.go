@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -229,22 +230,15 @@ func upsertStocks(ctx context.Context, db *sql.DB, exportDate time.Time, items [
 }
 
 func nullStr(s string) sql.NullString {
-	s = stringsTrim(s)
+	s = strings.TrimSpace(s)
 	if s == "" {
 		return sql.NullString{Valid: false}
 	}
-	return sql.NullString{String: s, Valid: true}
+	return sql.NullString{
+		String: s,
+		Valid:  true,
+	}
 }
-
-func stringsTrim(s string) string {
-	// мягкая нормализация
-	return bytes.TrimSpace([]byte(s)).String()
-}
-
-// workaround: bytes.TrimSpace returns []byte, so helper:
-type byteString []byte
-
-func (b []byte) String() string { return string(b) }
 
 func batchInt64(a []int64, size int) [][]int64 {
 	if size <= 0 {
