@@ -94,11 +94,17 @@ func fetchToken(ctx context.Context, httpc *http.Client, clientID, secret string
 	return tr.AccessToken, nil
 }
 
-func fetchDailyCSV(ctx context.Context, httpc *http.Client, token string) ([]byte, error) {
+func fetchDailyCSV(ctx context.Context, httpc *http.Client, token, dateFrom, dateTo string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, dailyEndpoint, nil)
 	if err != nil {
 		return nil, err
 	}
+
+	q := req.URL.Query()
+	q.Add("dateFrom", dateFrom)
+	q.Add("dateTo", dateTo)
+	req.URL.RawQuery = q.Encode()
+
 	req.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := httpc.Do(req)
@@ -436,7 +442,9 @@ func main() {
 	fmt.Println("token ok")
 
 	// 2) daily csv
-	rawCSV, err := fetchDailyCSV(ctx, httpc, token)
+	dateFrom := "2025-12-01"
+	dateTo := "2025-12-31"
+	rawCSV, err := fetchDailyCSV(ctx, httpc, token, dateFrom, dateTo)
 	//_ = os.WriteFile("daily.csv", rawCSV, 0644)
 	//fmt.Println("saved: daily.csv")
 	if err != nil {
