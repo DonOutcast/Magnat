@@ -1,9 +1,11 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,9 +20,9 @@ import (
 )
 
 const (
-	tokenEndpoint              = "https://api-performance.ozon.ru/api/client/token"
-	ordersGenerateJSONEndpoint = "https://api-performance.ozon.ru/api/client/statistic/orders/generate/json"
-	ordersReportEndpoint       = "https://api-performance.ozon.ru/api/client/statistics/report" // ?UUID=
+	tokenEndpoint          = "https://api-performance.ozon.ru/api/client/token"
+	ordersGenerateEndpoint = "https://api-performance.ozon.ru/api/client/statistic/orders/generate"
+	ordersReportEndpoint   = "https://api-performance.ozon.ru/api/client/statistics/report" // ?UUID=
 )
 
 type TokenRequest struct {
@@ -196,9 +198,9 @@ type MaybeTask struct {
 	UUID string `json:"UUID"`
 }
 
-func fetchOrdersGenerateJSON(ctx context.Context, httpc *http.Client, token, fromRFC3339, toRFC3339 string) ([]byte, error) {
+func fetchOrdersGenerate(ctx context.Context, httpc *http.Client, token, fromRFC3339, toRFC3339 string) ([]byte, error) {
 	body, _ := json.Marshal(OrdersGeneratePayload{From: fromRFC3339, To: toRFC3339})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ordersGenerateJSONEndpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ordersGenerateEndpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -316,7 +318,7 @@ func pollAndDownloadReport(ctx context.Context, httpc *http.Client, token, uuid 
 
 		// иногда бывает 404/409 пока не готово
 		if code < 200 || code >= 300 {
-			fmt.Printf("report not ready yet: http %d body=%s\n", code, string(raw))
+			fmt.Printf("report not ready yet: http %d\n", code)
 			time.Sleep(5 * time.Second)
 			continue
 		}
@@ -332,9 +334,6 @@ func pollAndDownloadReport(ctx context.Context, httpc *http.Client, token, uuid 
 			strings.Contains(strings.ToLower(ct), "application/octet-stream") {
 			return raw, ct, nil
 		}
-
-		// Иначе — скорее всего “ещё не готов”
-		fmt.Printf("report not ready yet: content-type=%s body=%s\n", ct, string(raw))
 		time.Sleep(5 * time.Second)
 	}
 
@@ -499,7 +498,298 @@ func upsertAdsOrders(ctx context.Context, db *sql.DB, rows []AdsOrderRow) error 
 	return tx.Commit()
 }
 
-// -------------------- MAIN --------------------
+func unzipFirstFile(zipBytes []byte) ([]byte, error) {
+	zr, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
+	if err != nil {
+		return nil, fmt.Errorf("zip read: %w", err)
+	}
+	if len(zr.File) == 0 {
+		return nil, fmt.Errorf("zip is empty")
+	}
+
+	// берём первый файл
+	f := zr.File[0]
+	rc, err := f.Open()
+	if err != nil {
+		return nil, fmt.Errorf("zip open file: %w", err)
+	}
+	defer rc.Close()
+
+	out, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, fmt.Errorf("zip read file: %w", err)
+	}
+	return out, nil
+}
+
+func extractCSVBytes(raw []byte, contentType string) ([]byte, string, error) {
+	ct := strings.ToLower(contentType)
+
+	// ZIP по Content-Type
+	if strings.Contains(ct, "application/zip") {
+		b, err := unzipFirstFile(raw)
+		return b, "zip", err
+	}
+
+	// ZIP по сигнатуре PK
+	if len(raw) >= 2 && raw[0] == 'P' && raw[1] == 'K' {
+		b, err := unzipFirstFile(raw)
+		return b, "zip", err
+	}
+
+	// иначе считаем, что это CSV-текст
+	// иногда Ozon шлёт BOM или первую "служебную" строку — уберём как в python
+	s := string(raw)
+	s = strings.TrimPrefix(s, "\ufeff")
+
+	if i := strings.Index(s, "\n"); i != -1 {
+		first := strings.TrimSpace(s[:i])
+		if !strings.Contains(first, ";") {
+			s = s[i+1:]
+		}
+	}
+
+	return []byte(s), "csv", nil
+}
+
+func debugCSV(csvBytes []byte) ([]string, int, error) {
+	r := csv.NewReader(bytes.NewReader(csvBytes))
+	r.Comma = ';'
+	r.LazyQuotes = true
+	r.FieldsPerRecord = -1 // ✅ ключевой фикс
+
+	var header []string
+
+	for {
+		rec, err := r.Read()
+		if err == io.EOF {
+			return nil, 0, fmt.Errorf("csv: reached EOF before header")
+		}
+		if err != nil {
+			// ✅ пропускаем кривые строки пролога
+			continue
+		}
+
+		// нормализуем
+		for i := range rec {
+			rec[i] = strings.TrimSpace(strings.TrimPrefix(rec[i], "\ufeff"))
+		}
+
+		// ✅ твой реальный заголовок (как в pandas)
+		joined := strings.Join(rec, "|")
+		if strings.Contains(joined, "Дата") &&
+			strings.Contains(joined, "ID заказа") &&
+			strings.Contains(joined, "Номер заказа") &&
+			strings.Contains(joined, "SKU") &&
+			strings.Contains(joined, "Расход") {
+			header = rec
+			break
+		}
+	}
+
+	rows := 0
+	for {
+		rec, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			continue
+		}
+
+		if len(rec) == 0 {
+			continue
+		}
+
+		rows++
+	}
+
+	return header, rows, nil
+}
+
+func parseDateDDMMYYYY(s string) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse("02.01.2006", s)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+func parseInt64Loose(s string) (int64, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false
+	}
+	// бывает научная нотация или дробь после pandas/Excel
+	s2 := strings.ReplaceAll(s, " ", "")
+	s2 = strings.ReplaceAll(s2, "\u00A0", "")
+	s2 = strings.ReplaceAll(s2, ",", ".")
+	if i, err := strconv.ParseInt(s2, 10, 64); err == nil {
+		return i, true
+	}
+	if f, err := strconv.ParseFloat(s2, 64); err == nil {
+		return int64(f), true
+	}
+	return 0, false
+}
+
+func parseFloat64Ru(s string) (float64, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false
+	}
+	s = strings.ReplaceAll(s, " ", "")
+	s = strings.ReplaceAll(s, "\u00A0", "")
+	s = strings.ReplaceAll(s, "₽", "")
+	s = strings.ReplaceAll(s, ",", ".")
+	f, err := strconv.ParseFloat(s, 64)
+	return f, err == nil
+}
+
+func parseAdsOrdersCSV(csvBytes []byte) ([]AdsOrderRow, error) {
+	r := csv.NewReader(bytes.NewReader(csvBytes))
+	r.Comma = ';'
+	r.LazyQuotes = true
+	r.FieldsPerRecord = -1 // ✅ обязательно
+
+	// 1) найти header (пропуская пролог)
+	var header []string
+	for {
+		rec, err := r.Read()
+		if err == io.EOF {
+			return nil, fmt.Errorf("csv: reached EOF before header")
+		}
+		if err != nil {
+			continue
+		}
+		for i := range rec {
+			rec[i] = strings.TrimSpace(strings.TrimPrefix(rec[i], "\ufeff"))
+		}
+		joined := strings.Join(rec, "|")
+		if strings.Contains(joined, "Дата") &&
+			strings.Contains(joined, "ID заказа") &&
+			strings.Contains(joined, "Номер заказа") &&
+			strings.Contains(joined, "SKU") &&
+			strings.Contains(joined, "Расход") {
+			header = rec
+			break
+		}
+	}
+
+	// 2) индекс колонок по имени
+	col := map[string]int{}
+	for i, h := range header {
+		col[h] = i
+	}
+
+	// обязательные колонки
+	reqCols := []string{
+		"Дата",
+		"ID заказа",
+		"Номер заказа",
+		"SKU",
+		"SKU продвигаемого товара",
+		"Артикул",
+		"Источник заказов",
+		"Название товара",
+		"Количество",
+		"Стоимость продажи, ₽",
+		"Стоимость, ₽",
+		"Ставка, %",
+		"Ставка, ₽",
+		"Расход, ₽",
+	}
+	for _, c := range reqCols {
+		if _, ok := col[c]; !ok {
+			// не валимся сразу — просто сообщаем, что чего-то нет
+			return nil, fmt.Errorf("csv: missing column %q. got headers=%v", c, header)
+		}
+	}
+
+	// 3) читать строки данных
+	out := make([]AdsOrderRow, 0, 1024)
+
+	maxIdx := 0
+	for _, idx := range col {
+		if idx > maxIdx {
+			maxIdx = idx
+		}
+	}
+
+	for {
+		rec, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			// пропускаем битые строки
+			continue
+		}
+		if len(rec) == 0 {
+			continue
+		}
+		// если строка короче нужного количества — пропускаем
+		if len(rec) <= maxIdx {
+			continue
+		}
+
+		// ID заказа (обязательный)
+		orderID, ok := parseInt64Loose(rec[col["ID заказа"]])
+		if !ok || orderID == 0 {
+			continue
+		}
+
+		row := AdsOrderRow{OrderID: orderID}
+
+		// Дата (DATE)
+		if t, ok := parseDateDDMMYYYY(rec[col["Дата"]]); ok {
+			row.OrderDate = sql.NullTime{Time: t, Valid: true}
+		}
+
+		// Номер заказа
+		row.OrderNumber = nullText(rec[col["Номер заказа"]])
+
+		// SKU
+		if v, ok := parseInt64Loose(rec[col["SKU"]]); ok {
+			row.SKU = sql.NullInt64{Int64: v, Valid: true}
+		}
+		if v, ok := parseInt64Loose(rec[col["SKU продвигаемого товара"]]); ok {
+			row.PromotedSKU = sql.NullInt64{Int64: v, Valid: true}
+		}
+
+		row.Article = nullText(rec[col["Артикул"]])
+		row.OrderSource = nullText(rec[col["Источник заказов"]])
+		row.ProductName = nullText(rec[col["Название товара"]])
+
+		// Кол-во / суммы / ставки
+		if f, ok := parseFloat64Ru(rec[col["Количество"]]); ok {
+			row.Quantity = sql.NullFloat64{Float64: f, Valid: true}
+		}
+		if f, ok := parseFloat64Ru(rec[col["Стоимость продажи, ₽"]]); ok {
+			row.SaleAmountRub = sql.NullFloat64{Float64: f, Valid: true}
+		}
+		if f, ok := parseFloat64Ru(rec[col["Стоимость, ₽"]]); ok {
+			row.CostRub = sql.NullFloat64{Float64: f, Valid: true}
+		}
+		if f, ok := parseFloat64Ru(rec[col["Ставка, %"]]); ok {
+			row.BidPercent = sql.NullFloat64{Float64: f, Valid: true}
+		}
+		if f, ok := parseFloat64Ru(rec[col["Ставка, ₽"]]); ok {
+			row.BidRub = sql.NullFloat64{Float64: f, Valid: true}
+		}
+		if f, ok := parseFloat64Ru(rec[col["Расход, ₽"]]); ok {
+			row.SpendRub = sql.NullFloat64{Float64: f, Valid: true}
+		}
+
+		out = append(out, row)
+	}
+
+	return out, nil
+}
 
 func main() {
 	ctx := context.Background()
@@ -509,33 +799,26 @@ func main() {
 	perfSecret := mustEnv("OZON_PERF_SECRET")
 	pgDsn := mustEnv("PG_DSN")
 
-	// Период можно задавать env:
-	// ADS_ORDERS_FROM="2025-12-21T00:00:00Z"
-	// ADS_ORDERS_TO="2025-12-25T23:59:59Z"
-	from := "2025-12-01T00:00:00Z" //envOr("ADS_ORDERS_FROM", time.Now().Add(-48*time.Hour).UTC().Format(time.RFC3339))
-	to := "2026-01-15T23:59:59Z"   //envOr("ADS_ORDERS_TO", time.Now().UTC().Format(time.RFC3339))
+	from := "2025-12-01T00:00:00Z"
+	to := "2025-12-15T23:59:59Z"
 
 	httpc := &http.Client{Timeout: 120 * time.Second}
 
-	// 1) token
 	token, err := fetchToken(ctx, httpc, perfClientID, perfSecret)
 	if err != nil {
 		panic(err)
 	}
 	fmt.Println("token ok")
 
-	raw, err := fetchOrdersGenerateJSON(ctx, httpc, token, from, to)
+	raw, err := fetchOrdersGenerate(ctx, httpc, token, from, to) // POST /generate
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println("orders generate raw:", string(raw))
 
-	// тут достаём UUID
 	var task MaybeTask
 	if err := json.Unmarshal(raw, &task); err != nil || task.UUID == "" {
-		panic(fmt.Errorf("no UUID in generate/json response: %s", string(raw)))
+		panic(fmt.Errorf("no UUID in generate response: %s", string(raw)))
 	}
-
 	fmt.Println("got task UUID:", task.UUID, "-> downloading report...")
 
 	raw2, ct, err := pollAndDownloadReport(ctx, httpc, token, task.UUID)
@@ -547,31 +830,28 @@ func main() {
 	_ = os.WriteFile("report.bin", raw2, 0644)
 	fmt.Println("saved: report.bin")
 
-	if !strings.Contains(strings.ToLower(ct), "application/json") {
-		panic(fmt.Errorf("report is not json (ct=%s). Saved to report.bin", ct))
-	}
-
-	// raw2 — это и есть отчет (для json-отчёта ожидаем JSON)
-	rowsAny, task2, err := extractRowsFromAnyJSON(raw2)
+	csvBytes, format, err := extractCSVBytes(raw2, ct)
 	if err != nil {
 		panic(err)
 	}
-	if task2 != nil {
-		panic("unexpected: got task again after report download")
-	}
+	fmt.Println("report format:", format, "csv bytes:", len(csvBytes))
 
-	// 4) map -> db rows
-	out := make([]AdsOrderRow, 0, len(rowsAny))
-	for _, m := range rowsAny {
-		r, ok := mapToAdsOrderRow(m)
-		if !ok {
-			continue
-		}
-		out = append(out, r)
-	}
-	fmt.Println("parsed rows:", len(out))
+	//header, rowsCount, err := debugCSV(csvBytes)
+	//if err != nil {
+	//	panic(err)
+	//}
+	//fmt.Println("CSV headers:")
+	//for i, h := range header {
+	//	fmt.Printf("  %d: %q\n", i, h)
+	//}
+	//fmt.Println("csv rows:", rowsCount)
 
-	// 5) upsert
+	orders, err := parseAdsOrdersCSV(csvBytes)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("parsed orders:", len(orders))
+
 	db, err := sql.Open("pgx", pgDsn)
 	if err != nil {
 		panic(err)
@@ -581,9 +861,8 @@ func main() {
 		panic(err)
 	}
 
-	if err := upsertAdsOrders(ctx, db, out); err != nil {
+	if err := upsertAdsOrders(ctx, db, orders); err != nil {
 		panic(err)
 	}
-
 	fmt.Println("done")
 }
