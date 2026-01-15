@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +33,16 @@ type TokenRequest struct {
 type TokenResponse struct {
 	AccessToken string `json:"access_token"`
 	// expires_in и т.п. можно добавить при желании
+}
+
+var reTopSuffix = regexp.MustCompile(`(?i)\s*[-—]\s*(вывод\s+в\s+топ|топ)\s*$`)
+
+func articleFromCampaignName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	return strings.TrimSpace(reTopSuffix.ReplaceAllString(name, ""))
 }
 
 func mustEnv(k string) string {
@@ -108,9 +119,22 @@ func fetchDailyCSV(ctx context.Context, httpc *http.Client, token string) ([]byt
 func normalizeHeader(s string) string {
 	s = strings.TrimSpace(strings.ToLower(s))
 	s = strings.ReplaceAll(s, "\uFEFF", "") // BOM
-	s = strings.ReplaceAll(s, " ", "")
-	s = strings.ReplaceAll(s, "_", "")
-	s = strings.ReplaceAll(s, "-", "")
+
+	// вычищаем пунктуацию/валюту/пробелы
+	repl := []string{
+		" ", "", "\t", "",
+		"_", "", "-", "",
+		",", "", ".", "",
+		"(", "", ")", "",
+		"₽", "", "№", "",
+	}
+	for i := 0; i < len(repl); i += 2 {
+		s = strings.ReplaceAll(s, repl[i], repl[i+1])
+	}
+
+	// часто встречается "руб" / "rur"
+	s = strings.ReplaceAll(s, "руб", "")
+	s = strings.ReplaceAll(s, "rur", "")
 	return s
 }
 
@@ -306,8 +330,15 @@ func aggregateDaily(exportDate time.Time, csvBytes []byte) ([]AdsAggRow, error) 
 
 		// если campaign_name пустой — попробуем заполнить из этой строки
 		if !cur.CampaignName.Valid {
-			cur.CampaignName = nullText(pick(row, "campaign_name", "campaignname", "namecampaign", "названиекампании", "кампания"))
+			cur.CampaignName = nullText(pick(row, "campaign_name", "campaignname", "namecampaign", "названиекампании", "кампания", "Название"))
 		}
+		if (!cur.Article.Valid || strings.TrimSpace(cur.Article.String) == "") && cur.CampaignName.Valid {
+			a := articleFromCampaignName(cur.CampaignName.String)
+			if a != "" {
+				cur.Article = sql.NullString{String: a, Valid: true}
+			}
+		}
+
 		// article так же
 		if !cur.Article.Valid {
 			cur.Article = nullText(pick(row, "article", "sku", "offer_id", "offerid", "артикул"))
@@ -406,6 +437,8 @@ func main() {
 
 	// 2) daily csv
 	rawCSV, err := fetchDailyCSV(ctx, httpc, token)
+	//_ = os.WriteFile("daily.csv", rawCSV, 0644)
+	//fmt.Println("saved: daily.csv")
 	if err != nil {
 		panic(err)
 	}
