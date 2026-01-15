@@ -219,7 +219,7 @@ func parseDateAny(s string) (time.Time, bool) {
 // --- data model / aggregation ---
 
 type AdsAggKey struct {
-	ExportDate time.Time
+	StatsDate  time.Time // день статистики (из колонки "Дата")
 	CampaignID int64
 }
 
@@ -282,19 +282,22 @@ func aggregateDaily(exportDate time.Time, csvBytes []byte) ([]AdsAggRow, error) 
 			continue
 		}
 
-		key := AdsAggKey{ExportDate: exportDate, CampaignID: cid}
+		dt, ok := parseDateAny(pick(row, "date", "stats_date", "statsdate", "дата", "Дата"))
+		if !ok {
+			continue
+		}
+		statsDay := dt.Truncate(24 * time.Hour)
+
+		key := AdsAggKey{StatsDate: statsDay, CampaignID: cid}
 		cur, exists := agg[key]
+
 		if !exists {
 			cur = &AdsAggRow{
 				ExportDate:   exportDate,
 				CampaignID:   cid,
-				CampaignName: nullText(pick(row, "campaign_name", "campaignname", "namecampaign", "названиекампании", "кампания")),
-				Article:      nullText(pick(row, "article", "sku", "offer_id", "offerid", "артикул", "offerid")),
-			}
-
-			// stats_date
-			if dt, ok := parseDateAny(pick(row, "date", "stats_date", "statsdate", "дата")); ok {
-				cur.StatsDate = sql.NullTime{Time: dt, Valid: true}
+				StatsDate:    sql.NullTime{Time: statsDay, Valid: true},
+				CampaignName: nullText(pick(row, "campaign_name", "campaignname", "namecampaign", "названиекампании", "кампания", "Название")),
+				Article:      nullText(pick(row, "article", "sku", "offer_id", "offerid", "артикул")),
 			}
 
 			agg[key] = cur
@@ -388,7 +391,7 @@ func upsertAdsAgg(ctx context.Context, db *sql.DB, rows []AdsAggRow) error {
 			$8, $9,
 			$10, $11
 		)
-		ON CONFLICT (export_date, campaign_id) DO UPDATE SET
+		ON CONFLICT (stats_date, campaign_id) DO UPDATE SET
 			campaign_name = EXCLUDED.campaign_name,
 			article = EXCLUDED.article,
 			stats_date = EXCLUDED.stats_date,
