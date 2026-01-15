@@ -18,16 +18,9 @@ import (
 )
 
 const (
-	tokenEndpoint = "https://api-performance.ozon.ru/api/client/token"
-
-	// Твой endpoint:
+	tokenEndpoint              = "https://api-performance.ozon.ru/api/client/token"
 	ordersGenerateJSONEndpoint = "https://api-performance.ozon.ru/api/client/statistic/orders/generate/json"
-
-	// Если generate/json вернёт UUID задачи — эти endpoints могут понадобиться.
-	// ВАЖНО: у Ozon в разных местах встречаются варианты путей.
-	// Если у тебя не совпадёт — пришли реальный ответ generate/json, я подгоню точно.
-	ordersTaskStatusEndpointTmpl = "https://api-performance.ozon.ru/api/client/statistics/%s"     // пример: /api/client/statistics/{UUID}
-	ordersDownloadEndpoint       = "https://api-performance.ozon.ru/api/client/statistics/report" // пример: /api/client/statistics/report?UUID=...
+	ordersReportEndpoint       = "https://api-performance.ozon.ru/api/client/statistics/report" // ?UUID=
 )
 
 type TokenRequest struct {
@@ -200,9 +193,7 @@ type OrdersGeneratePayload struct {
 
 // если generate/json вернёт задачу — обычно там что-то вроде uuid/report_id/task_id
 type MaybeTask struct {
-	UUID     string `json:"uuid"`
-	TaskID   string `json:"task_id"`
-	ReportID string `json:"report_id"`
+	UUID string `json:"UUID"`
 }
 
 func fetchOrdersGenerateJSON(ctx context.Context, httpc *http.Client, token, fromRFC3339, toRFC3339 string) ([]byte, error) {
@@ -250,7 +241,7 @@ func extractRowsFromAnyJSON(raw []byte) ([]map[string]any, *MaybeTask, error) {
 	var mt MaybeTask
 	b, _ := json.Marshal(obj)
 	_ = json.Unmarshal(b, &mt)
-	if mt.UUID != "" || mt.TaskID != "" || mt.ReportID != "" {
+	if mt.UUID != "" {
 		return nil, &mt, nil
 	}
 
@@ -287,77 +278,67 @@ func anySliceToMapSlice(a []any) []map[string]any {
 
 // -------------------- OPTIONAL: POLLING TASK (IF NEEDED) --------------------
 
-func pollAndDownloadIfTask(ctx context.Context, httpc *http.Client, token string, task *MaybeTask) ([]byte, error) {
-	uuid := task.UUID
-	if uuid == "" {
-		uuid = task.TaskID
-	}
-	if uuid == "" {
-		uuid = task.ReportID
-	}
-	if uuid == "" {
-		return nil, fmt.Errorf("task returned but uuid/task_id/report_id is empty")
+func downloadReportByUUID(ctx context.Context, httpc *http.Client, token, uuid string) ([]byte, string, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ordersReportEndpoint, nil)
+	if err != nil {
+		return nil, "", 0, err
 	}
 
-	// Поллим до 5 минут
-	deadline := time.Now().Add(5 * time.Minute)
-	statusURL := fmt.Sprintf(ordersTaskStatusEndpointTmpl, uuid)
+	q := req.URL.Query()
+	q.Set("UUID", uuid)
+	req.URL.RawQuery = q.Encode()
+
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return nil, "", 0, err
+	}
+	defer resp.Body.Close()
+
+	ct := resp.Header.Get("Content-Type")
+	raw, _ := io.ReadAll(resp.Body)
+
+	// Ozon иногда возвращает 200, но текстом "report not ready"
+	return raw, ct, resp.StatusCode, nil
+}
+
+func pollAndDownloadReport(ctx context.Context, httpc *http.Client, token, uuid string) ([]byte, string, error) {
+	deadline := time.Now().Add(10 * time.Minute) // месяц может собираться дольше 5 минут
 
 	for time.Now().Before(deadline) {
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
-		req.Header.Set("Authorization", "Bearer "+token)
-
-		resp, err := httpc.Do(req)
+		raw, ct, code, err := downloadReportByUUID(ctx, httpc, token, uuid)
 		if err != nil {
-			return nil, err
-		}
-		raw, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return nil, fmt.Errorf("task status http %d: %s", resp.StatusCode, string(raw))
+			fmt.Println("download error:", err)
+			time.Sleep(5 * time.Second)
+			continue
 		}
 
-		// ожидаем что в ответе будет status=OK/READY/FINISHED или похожее
-		var st map[string]any
-		dec := json.NewDecoder(bytes.NewReader(raw))
-		dec.UseNumber()
-		_ = dec.Decode(&st)
-
-		// пробуем найти любой статус
-		status := ""
-		if v, ok := st["status"]; ok {
-			if s, ok2 := v.(string); ok2 {
-				status = strings.ToLower(strings.TrimSpace(s))
-			}
+		// иногда бывает 404/409 пока не готово
+		if code < 200 || code >= 300 {
+			fmt.Printf("report not ready yet: http %d body=%s\n", code, string(raw))
+			time.Sleep(5 * time.Second)
+			continue
 		}
 
-		if status == "ok" || status == "ready" || status == "finished" || status == "success" {
-			// скачиваем report
-			// часто это /api/client/statistics/report?UUID=<uuid>
-			dlURL := ordersDownloadEndpoint + "?UUID=" + uuid
-
-			req2, _ := http.NewRequestWithContext(ctx, http.MethodGet, dlURL, nil)
-			req2.Header.Set("Authorization", "Bearer "+token)
-
-			resp2, err := httpc.Do(req2)
-			if err != nil {
-				return nil, err
-			}
-			out, _ := io.ReadAll(resp2.Body)
-			resp2.Body.Close()
-
-			if resp2.StatusCode < 200 || resp2.StatusCode >= 300 {
-				return nil, fmt.Errorf("download http %d: %s", resp2.StatusCode, string(out))
-			}
-			return out, nil
+		// Если пришел JSON — отлично
+		if strings.Contains(strings.ToLower(ct), "application/json") {
+			return raw, ct, nil
 		}
 
-		// ждём и пробуем снова
+		// Если пришел ZIP/CSV — это тоже "готово", но формат другой
+		if strings.Contains(strings.ToLower(ct), "application/zip") ||
+			strings.Contains(strings.ToLower(ct), "text/csv") ||
+			strings.Contains(strings.ToLower(ct), "application/octet-stream") {
+			return raw, ct, nil
+		}
+
+		// Иначе — скорее всего “ещё не готов”
+		fmt.Printf("report not ready yet: content-type=%s body=%s\n", ct, string(raw))
 		time.Sleep(5 * time.Second)
 	}
 
-	return nil, fmt.Errorf("task not ready after timeout, uuid=%s", uuid)
+	return nil, "", fmt.Errorf("timeout waiting report uuid=%s", uuid)
 }
 
 // -------------------- TRANSFORM TO DB ROWS --------------------
@@ -543,35 +524,40 @@ func main() {
 	}
 	fmt.Println("token ok")
 
-	// 2) generate json
 	raw, err := fetchOrdersGenerateJSON(ctx, httpc, token, from, to)
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println("orders generate bytes:", len(raw))
+	fmt.Println("orders generate raw:", string(raw))
 
-	// 3) parse (rows or task)
-	rowsAny, task, err := extractRowsFromAnyJSON(raw)
+	// тут достаём UUID
+	var task MaybeTask
+	if err := json.Unmarshal(raw, &task); err != nil || task.UUID == "" {
+		panic(fmt.Errorf("no UUID in generate/json response: %s", string(raw)))
+	}
+
+	fmt.Println("got task UUID:", task.UUID, "-> downloading report...")
+
+	raw2, ct, err := pollAndDownloadReport(ctx, httpc, token, task.UUID)
 	if err != nil {
 		panic(err)
 	}
+	fmt.Println("downloaded bytes:", len(raw2), "content-type:", ct)
 
-	// Если это задача — пробуем дождаться и скачать готовый JSON
-	if task != nil {
-		fmt.Printf("got task (uuid=%s task_id=%s report_id=%s) -> polling...\n", task.UUID, task.TaskID, task.ReportID)
-		raw2, err := pollAndDownloadIfTask(ctx, httpc, token, task)
-		if err != nil {
-			panic(err)
-		}
-		fmt.Println("downloaded bytes:", len(raw2))
+	_ = os.WriteFile("report.bin", raw2, 0644)
+	fmt.Println("saved: report.bin")
 
-		rowsAny, task, err = extractRowsFromAnyJSON(raw2)
-		if err != nil {
-			panic(err)
-		}
-		if task != nil {
-			panic("unexpected: still task after download")
-		}
+	if !strings.Contains(strings.ToLower(ct), "application/json") {
+		panic(fmt.Errorf("report is not json (ct=%s). Saved to report.bin", ct))
+	}
+
+	// raw2 — это и есть отчет (для json-отчёта ожидаем JSON)
+	rowsAny, task2, err := extractRowsFromAnyJSON(raw2)
+	if err != nil {
+		panic(err)
+	}
+	if task2 != nil {
+		panic("unexpected: got task again after report download")
 	}
 
 	// 4) map -> db rows
