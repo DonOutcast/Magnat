@@ -799,7 +799,7 @@ func main() {
 	perfSecret := mustEnv("OZON_PERF_SECRET")
 	pgDsn := mustEnv("PG_DSN")
 
-	from := "2025-12-15T00:00:00Z"
+	from := "2025-12-16T00:00:00Z"
 	to := "2025-12-31T23:59:59Z"
 
 	httpc := &http.Client{Timeout: 120 * time.Second}
