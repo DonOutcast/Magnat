@@ -76,8 +76,8 @@ func (c *OzonClient) CreateFBOPostingsReport(ctx context.Context, from, to time.
 
 	payload := map[string]any{
 		"filter": map[string]any{
-			"processed_at_from": "2025-12-01T17:10:54.861Z", //from.UTC().Format(time.RFC3339Nano),
-			"processed_at_to":   "2025-12-31T17:10:54.861Z", //to.UTC().Format(time.RFC3339Nano),
+			"processed_at_from": from.UTC().Format(time.RFC3339Nano), //"2025-12-01T17:10:54.861Z",
+			"processed_at_to":   to.UTC().Format(time.RFC3339Nano),   //"2025-12-31T17:10:54.861Z",
 			"delivery_schema":   []string{"fbo"},
 		},
 	}
