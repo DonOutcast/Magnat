@@ -531,8 +531,8 @@ func main() {
 	// Период можно задавать env:
 	// ADS_ORDERS_FROM="2025-12-21T00:00:00Z"
 	// ADS_ORDERS_TO="2025-12-25T23:59:59Z"
-	from := envOr("ADS_ORDERS_FROM", time.Now().Add(-48*time.Hour).UTC().Format(time.RFC3339))
-	to := envOr("ADS_ORDERS_TO", time.Now().UTC().Format(time.RFC3339))
+	from := "2025-12-01T00:00:00Z" //envOr("ADS_ORDERS_FROM", time.Now().Add(-48*time.Hour).UTC().Format(time.RFC3339))
+	to := "2026-01-15T23:59:59Z"   //envOr("ADS_ORDERS_TO", time.Now().UTC().Format(time.RFC3339))
 
 	httpc := &http.Client{Timeout: 120 * time.Second}
 
