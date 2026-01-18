@@ -450,6 +450,7 @@ func main() {
 	rawCSV, err := fetchDailyCSV(ctx, httpc, token, dateFrom, dateTo)
 	//_ = os.WriteFile("daily.csv", rawCSV, 0644)
 	//fmt.Println("saved: daily.csv")
+	fmt.Println(dateTo, dateFrom)
 	if err != nil {
 		panic(err)
 	}
