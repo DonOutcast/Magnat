@@ -274,8 +274,8 @@ func main() {
 
 	_ = godotenv.Load("../.env")
 
-	from := flag.String("from", "2025-12-05T00:00:01Z", "date_from RFC3339 (UTC)")
-	to := flag.String("to", "2025-12-05T23:59:59Z", "date_to RFC3339 (UTC)")
+	from := mustEnv("PROCESSED_FROM")
+	to := mustEnv("PROCESSED_TO")
 	limit := flag.Int("limit", 1000, "limit")
 	flag.Parse()
 
@@ -294,8 +294,8 @@ func main() {
 	}
 
 	req := AnalyticsRequest{
-		DateFrom:  *from,
-		DateTo:    *to,
+		DateFrom:  from,
+		DateTo:    to,
 		Dimension: []string{"sku", "day"},
 		Limit:     *limit,
 		Metrics:   []string{"ordered_units", "position_category"},

@@ -384,9 +384,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// даты — можно управлять env’ами
-	// пример: PROCESSED_FROM=2025-12-01T17:10:54.861Z
-	//         PROCESSED_TO=2025-12-02T17:10:54.861Z
 	fromStr := os.Getenv("PROCESSED_FROM")
 	toStr := os.Getenv("PROCESSED_TO")
 	if fromStr == "" || toStr == "" {

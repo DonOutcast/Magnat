@@ -445,8 +445,8 @@ func main() {
 	fmt.Println("token ok")
 
 	// 2) daily csv
-	dateFrom := "2025-12-01"
-	dateTo := "2025-12-31"
+	dateFrom := mustEnv("PROCESSED_FROM")
+	dateTo := mustEnv("PROCESSED_TO")
 	rawCSV, err := fetchDailyCSV(ctx, httpc, token, dateFrom, dateTo)
 	//_ = os.WriteFile("daily.csv", rawCSV, 0644)
 	//fmt.Println("saved: daily.csv")
