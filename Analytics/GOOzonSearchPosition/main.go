@@ -50,10 +50,12 @@ type AnalyticsResponse struct {
 }
 
 type SearchPositionRow struct {
-	ExportDate  time.Time
-	SKU         int64
-	ProductName *string
-	Place       *float64
+	ExportDate   time.Time
+	SKU          int64
+	ProductName  *string
+	Place        *float64
+	OrderedUnits *float64
+	Revenue      *float64
 }
 
 // ---------- helpers ----------
@@ -117,7 +119,7 @@ func cleanPtr(s string) *string {
 	return &s
 }
 
-// day dimension обычно приходит как "2025-12-05" или RFC3339.
+// day dimension обычно приходит как "2026-01-04" или RFC3339.
 // парсим максимально терпимо.
 func parseDayToDate(v any, fallback time.Time) time.Time {
 	if v == nil {
@@ -129,11 +131,9 @@ func parseDayToDate(v any, fallback time.Time) time.Time {
 		if t == "" {
 			return fallback
 		}
-		// 1) yyyy-mm-dd
 		if d, err := time.Parse("2006-01-02", t); err == nil {
 			return d
 		}
-		// 2) RFC3339
 		if d, err := time.Parse(time.RFC3339, t); err == nil {
 			return d.UTC().Truncate(24 * time.Hour)
 		}
@@ -141,6 +141,28 @@ func parseDayToDate(v any, fallback time.Time) time.Time {
 	default:
 		return fallback
 	}
+}
+
+func dayBoundsUTC(day time.Time) (from, to time.Time) {
+	day = day.UTC().Truncate(24 * time.Hour)
+	from = day
+	to = day.Add(24 * time.Hour).Add(-1 * time.Nanosecond)
+	return
+}
+
+func parseAnyDate(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, fmt.Errorf("empty date")
+	}
+	// поддержим и yyyy-mm-dd и RFC3339
+	if d, err := time.Parse("2006-01-02", s); err == nil {
+		return d.UTC().Truncate(24 * time.Hour), nil
+	}
+	if d, err := time.Parse(time.RFC3339, s); err == nil {
+		return d.UTC(), nil
+	}
+	return time.Time{}, fmt.Errorf("unknown date format: %s", s)
 }
 
 // ---------- ozon call ----------
@@ -174,29 +196,25 @@ func (c *OzonClient) FetchSearchPositions(ctx context.Context, req AnalyticsRequ
 		return nil, fmt.Errorf("json unmarshal error: %w; raw=%s", err, string(raw))
 	}
 
-	// ожидаем dimension ["sku","day"]
-	// по твоей логике: dims[0]=sku, dims[1]=day
-	var out []SearchPositionRow
+	// индексы метрик — строго по именам, чтобы порядок в Metrics можно было менять безопасно
+	idx := map[string]int{}
+	for i, m := range req.Metrics {
+		idx[m] = i
+	}
+	required := []string{"revenue", "ordered_units", "position_category"}
+	for _, k := range required {
+		if _, ok := idx[k]; !ok {
+			return nil, fmt.Errorf("metrics must include %s", k)
+		}
+	}
 
-	// fallback export_date = date_from (yyyy-mm-dd)
+	// fallback export_date = date_from
 	fallbackDate := time.Now().UTC().Truncate(24 * time.Hour)
 	if df, err := time.Parse(time.RFC3339, req.DateFrom); err == nil {
 		fallbackDate = df.UTC().Truncate(24 * time.Hour)
 	}
 
-	// metrics порядок как в req.Metrics:
-	// ['ordered_units', 'position_category']
-	// place берём из position_category => index 1
-	placeIdx := -1
-	for i, m := range req.Metrics {
-		if m == "position_category" {
-			placeIdx = i
-			break
-		}
-	}
-	if placeIdx == -1 {
-		return nil, fmt.Errorf("metrics must include position_category")
-	}
+	var out []SearchPositionRow
 
 	for _, row := range ar.Result.Data {
 		if len(row.Dimensions) < 1 {
@@ -216,19 +234,32 @@ func (c *OzonClient) FetchSearchPositions(ctx context.Context, req AnalyticsRequ
 			exportDate = parseDayToDate(row.Dimensions[1].ID, fallbackDate)
 		}
 
-		// place metric
-		var placePtr *float64
-		if len(row.Metrics) > placeIdx {
-			if f, ok := toFloat(row.Metrics[placeIdx]); ok {
+		// метрики
+		var placePtr, orderedPtr, revenuePtr *float64
+
+		if len(row.Metrics) > idx["position_category"] {
+			if f, ok := toFloat(row.Metrics[idx["position_category"]]); ok {
 				placePtr = &f
+			}
+		}
+		if len(row.Metrics) > idx["ordered_units"] {
+			if f, ok := toFloat(row.Metrics[idx["ordered_units"]]); ok {
+				orderedPtr = &f
+			}
+		}
+		if len(row.Metrics) > idx["revenue"] {
+			if f, ok := toFloat(row.Metrics[idx["revenue"]]); ok {
+				revenuePtr = &f
 			}
 		}
 
 		out = append(out, SearchPositionRow{
-			ExportDate:  exportDate,
-			SKU:         skuVal,
-			ProductName: name,
-			Place:       placePtr,
+			ExportDate:   exportDate,
+			SKU:          skuVal,
+			ProductName:  name,
+			Place:        placePtr,
+			OrderedUnits: orderedPtr,
+			Revenue:      revenuePtr,
 		})
 	}
 
@@ -248,11 +279,13 @@ func upsertSearchPositions(ctx context.Context, db *sql.DB, rows []SearchPositio
 	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO public.search_position (export_date, sku, product_name, place)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO public.search_position (export_date, sku, product_name, place, ordered_units, revenue)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (export_date, sku) DO UPDATE
-		SET product_name = EXCLUDED.product_name,
-		    place        = EXCLUDED.place
+		SET product_name  = EXCLUDED.product_name,
+		    place         = EXCLUDED.place,
+		    ordered_units = EXCLUDED.ordered_units,
+		    revenue       = EXCLUDED.revenue
 	`)
 	if err != nil {
 		return err
@@ -260,7 +293,7 @@ func upsertSearchPositions(ctx context.Context, db *sql.DB, rows []SearchPositio
 	defer stmt.Close()
 
 	for _, r := range rows {
-		_, err := stmt.ExecContext(ctx, r.ExportDate, r.SKU, r.ProductName, r.Place)
+		_, err := stmt.ExecContext(ctx, r.ExportDate, r.SKU, r.ProductName, r.Place, r.OrderedUnits, r.Revenue)
 		if err != nil {
 			return fmt.Errorf("insert failed sku=%d date=%s: %w", r.SKU, r.ExportDate.Format("2006-01-02"), err)
 		}
@@ -271,18 +304,21 @@ func upsertSearchPositions(ctx context.Context, db *sql.DB, rows []SearchPositio
 
 func main() {
 	ctx := context.Background()
-
 	_ = godotenv.Load("../.env")
 
-	from := mustEnv("PROCESSED_FROM")
-	to := mustEnv("PROCESSED_TO")
-	limit := flag.Int("limit", 1000, "limit")
+	// ВАЖНО: для цикла по дням удобнее, чтобы env были в формате YYYY-MM-DD
+	// но поддержим и RFC3339.
+	fromEnv := mustEnv("PROCESSED_FROM_SEARCH")
+	toEnv := mustEnv("PROCESSED_TO_SEARCH")
+
+	limit := flag.Int("limit", 1000, "limit per request")
 	flag.Parse()
 
 	clientID := mustEnv("OZON_CLIENT_ID")
 	apiKey := mustEnv("OZON_API_KEY")
 	pgDsn := mustEnv("PG_DSN")
-	endpoint := "https://api-seller.ozon.ru/v1/analytics/data" // https://api-seller.ozon.ru/v1/analytics/data
+
+	endpoint := "https://api-seller.ozon.ru/v1/analytics/data"
 
 	oz := &OzonClient{
 		ClientID: clientID,
@@ -293,36 +329,14 @@ func main() {
 		},
 	}
 
-	req := AnalyticsRequest{
-		DateFrom:  from,
-		DateTo:    to,
-		Dimension: []string{"sku", "day"},
-		Limit:     *limit,
-		Metrics:   []string{"ordered_units", "position_category"},
-	}
-
-	rows, err := oz.FetchSearchPositions(ctx, req)
+	startDate, err := parseAnyDate(fromEnv)
 	if err != nil {
 		panic(err)
 	}
-
-	fmt.Println("parsed rows:", len(rows))
-	if len(rows) > 0 {
-		// debug first 3
-		for i := 0; i < len(rows) && i < 3; i++ {
-			fmt.Printf("sample[%d]: date=%s sku=%d name=%v place=%v\n",
-				i,
-				rows[i].ExportDate.Format("2006-01-02"),
-				rows[i].SKU,
-				ptrStr(rows[i].ProductName),
-				ptrF(rows[i].Place),
-			)
-		}
+	endDate, err := parseAnyDate(toEnv)
+	if err != nil {
+		panic(err)
 	}
-	//for _, row := range rows {
-	//	b, _ := json.MarshalIndent(row, "", "  ")
-	//	fmt.Println(string(b))
-	//}
 
 	db, err := sql.Open("pgx", pgDsn)
 	if err != nil {
@@ -334,23 +348,47 @@ func main() {
 		panic(err)
 	}
 
-	if err := upsertSearchPositions(ctx, db, rows); err != nil {
-		panic(err)
+	totalInserted := 0
+
+	// отдельный запрос для каждого дня
+	for day := startDate.UTC().Truncate(24 * time.Hour); !day.After(endDate.UTC().Truncate(24 * time.Hour)); day = day.AddDate(0, 0, 1) {
+		fromDay, toDay := dayBoundsUTC(day)
+
+		offset := 0
+		dayRows := 0
+
+		for {
+			req := AnalyticsRequest{
+				DateFrom:  fromDay.Format(time.RFC3339Nano),
+				DateTo:    toDay.Format(time.RFC3339Nano),
+				Dimension: []string{"sku", "day"},
+				Limit:     *limit,
+				Offset:    offset,
+				Metrics:   []string{"revenue", "ordered_units", "position_category"},
+			}
+
+			rows, err := oz.FetchSearchPositions(ctx, req)
+			if err != nil {
+				panic(err)
+			}
+
+			if len(rows) > 0 {
+				if err := upsertSearchPositions(ctx, db, rows); err != nil {
+					panic(err)
+				}
+				dayRows += len(rows)
+				totalInserted += len(rows)
+			}
+
+			// если вернулось меньше лимита — дальше страниц нет
+			if len(rows) < *limit {
+				break
+			}
+			offset += *limit
+		}
+
+		fmt.Printf("day %s: upserted %d rows\n", day.Format("2006-01-02"), dayRows)
 	}
 
-	fmt.Println("done")
-}
-
-func ptrStr(p *string) string {
-	if p == nil {
-		return "<nil>"
-	}
-	return *p
-}
-
-func ptrF(p *float64) string {
-	if p == nil {
-		return "<nil>"
-	}
-	return fmt.Sprintf("%.6f", *p)
+	fmt.Println("done, total rows:", totalInserted)
 }

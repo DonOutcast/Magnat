@@ -114,6 +114,9 @@ CREATE TABLE IF NOT EXISTS search_position (
     PRIMARY KEY (export_date, sku)
 );
 
+ALTER TABLE public.search_position
+    ADD COLUMN IF NOT EXISTS ordered_units numeric,
+    ADD COLUMN IF NOT EXISTS revenue numeric;
 
 -- Индексы
 CREATE INDEX IF NOT EXISTS idx_search_position_sku ON search_position(sku);
