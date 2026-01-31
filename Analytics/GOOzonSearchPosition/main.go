@@ -371,6 +371,7 @@ func main() {
 			if err != nil {
 				panic(err)
 			}
+			time.Sleep(1 * time.Second)
 
 			if len(rows) > 0 {
 				if err := upsertSearchPositions(ctx, db, rows); err != nil {
