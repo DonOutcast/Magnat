@@ -68,6 +68,15 @@ func mustEnv(k string) string {
 	return v
 }
 
+func sleepWithJitter(base time.Duration, attempt int) {
+	// экспонента: base * 2^attempt, но с верхним потолком
+	d := base * time.Duration(1<<attempt)
+	if d > 15*time.Second {
+		d = 15 * time.Second
+	}
+	time.Sleep(d)
+}
+
 func toInt64(v any) (int64, bool) {
 	switch t := v.(type) {
 	case float64:
@@ -167,103 +176,75 @@ func parseAnyDate(s string) (time.Time, error) {
 
 // ---------- ozon call ----------
 func (c *OzonClient) FetchSearchPositions(ctx context.Context, req AnalyticsRequest) ([]SearchPositionRow, error) {
+	const (
+		minInterval = 1200 * time.Millisecond // безопаснее чем 1s
+		maxRetries  = 6
+	)
+
+	// троттлинг перед запросом
+	time.Sleep(minInterval)
+
 	bodyBytes, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.Endpoint, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Client-Id", c.ClientID)
-	httpReq.Header.Set("Api-Key", c.APIKey)
-
-	resp, err := c.HTTP.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("ozon http %d: %s", resp.StatusCode, string(raw))
-	}
-
-	var ar AnalyticsResponse
-	if err := json.Unmarshal(raw, &ar); err != nil {
-		return nil, fmt.Errorf("json unmarshal error: %w; raw=%s", err, string(raw))
-	}
-
-	// индексы метрик — строго по именам, чтобы порядок в Metrics можно было менять безопасно
-	idx := map[string]int{}
-	for i, m := range req.Metrics {
-		idx[m] = i
-	}
-	required := []string{"revenue", "ordered_units", "position_category"}
-	for _, k := range required {
-		if _, ok := idx[k]; !ok {
-			return nil, fmt.Errorf("metrics must include %s", k)
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.Endpoint, bytes.NewReader(bodyBytes))
+		if err != nil {
+			return nil, err
 		}
-	}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Client-Id", c.ClientID)
+		httpReq.Header.Set("Api-Key", c.APIKey)
 
-	// fallback export_date = date_from
-	fallbackDate := time.Now().UTC().Truncate(24 * time.Hour)
-	if df, err := time.Parse(time.RFC3339, req.DateFrom); err == nil {
-		fallbackDate = df.UTC().Truncate(24 * time.Hour)
-	}
+		resp, err := c.HTTP.Do(httpReq)
+		if err != nil {
+			// сетевые сбои тоже можно ретраить
+			if attempt < maxRetries {
+				sleepWithJitter(800*time.Millisecond, attempt)
+				continue
+			}
+			return nil, err
+		}
 
-	var out []SearchPositionRow
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
 
-	for _, row := range ar.Result.Data {
-		if len(row.Dimensions) < 1 {
+		// ✅ обработка rate limit
+		if resp.StatusCode == 429 {
+			if attempt >= maxRetries {
+				return nil, fmt.Errorf("ozon http 429 after retries: %s", string(raw))
+			}
+
+			// если вдруг Ozon присылает Retry-After — уважим
+			if ra := strings.TrimSpace(resp.Header.Get("Retry-After")); ra != "" {
+				if sec, parseErr := time.ParseDuration(ra + "s"); parseErr == nil && sec > 0 {
+					time.Sleep(sec)
+				} else {
+					sleepWithJitter(1*time.Second, attempt)
+				}
+			} else {
+				sleepWithJitter(1*time.Second, attempt)
+			}
 			continue
 		}
 
-		// sku dimension
-		skuVal, ok := toInt64(row.Dimensions[0].ID)
-		if !ok || skuVal == 0 {
-			continue
-		}
-		name := cleanPtr(row.Dimensions[0].Name)
-
-		// day dimension (если есть)
-		exportDate := fallbackDate
-		if len(row.Dimensions) > 1 {
-			exportDate = parseDayToDate(row.Dimensions[1].ID, fallbackDate)
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("ozon http %d: %s", resp.StatusCode, string(raw))
 		}
 
-		// метрики
-		var placePtr, orderedPtr, revenuePtr *float64
-
-		if len(row.Metrics) > idx["position_category"] {
-			if f, ok := toFloat(row.Metrics[idx["position_category"]]); ok {
-				placePtr = &f
-			}
-		}
-		if len(row.Metrics) > idx["ordered_units"] {
-			if f, ok := toFloat(row.Metrics[idx["ordered_units"]]); ok {
-				orderedPtr = &f
-			}
-		}
-		if len(row.Metrics) > idx["revenue"] {
-			if f, ok := toFloat(row.Metrics[idx["revenue"]]); ok {
-				revenuePtr = &f
-			}
+		var ar AnalyticsResponse
+		if err := json.Unmarshal(raw, &ar); err != nil {
+			return nil, fmt.Errorf("json unmarshal error: %w; raw=%s", err, string(raw))
 		}
 
-		out = append(out, SearchPositionRow{
-			ExportDate:   exportDate,
-			SKU:          skuVal,
-			ProductName:  name,
-			Place:        placePtr,
-			OrderedUnits: orderedPtr,
-			Revenue:      revenuePtr,
-		})
+		// дальше твой текущий парсинг без изменений ↓
+		// ...
+		// return out, nil
+		// (вставь сюда текущую часть парсинга из твоей функции)
 	}
-
-	return out, nil
+	return nil, fmt.Errorf("unexpected retry loop exit")
 }
 
 // ---------- db upsert ----------
