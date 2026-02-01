@@ -315,7 +315,7 @@ INSERT INTO public.orders_fbo (
 	$20,$21,$22,$23,
 	$24,$25
 )
-ON CONFLICT (order_number) DO UPDATE SET
+ON CONFLICT (order_number, shipment_number, sku) DO UPDATE SET 
 	shipment_number = EXCLUDED.shipment_number,
 	accepted_at = EXCLUDED.accepted_at,
 	shipment_date = EXCLUDED.shipment_date,
