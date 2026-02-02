@@ -69,7 +69,16 @@ type StockItem struct {
 	DaysWithoutSalesCluster *int64   `json:"days_without_sales_cluster"`
 }
 
-func nzFloat(p *float64) float64 {
+func mustEnv(k string) string {
+	v := os.Getenv(k)
+	if v == "" {
+		fmt.Println("missing env:", k)
+		os.Exit(1)
+	}
+	return v
+}
+
+func nz(p *int64) int64 {
 	if p == nil {
 		return 0
 	}
@@ -81,7 +90,7 @@ func tagsToStr(tags []string) sql.NullString {
 		return sql.NullString{Valid: false}
 	}
 	s := strings.Join(tags, ",")
-	if len(s) > 100 { // item_tag varchar(100)
+	if len(s) > 100 {
 		s = s[:100]
 	}
 	return sql.NullString{String: s, Valid: true}
@@ -113,27 +122,81 @@ func str50FromFloat64Ptr(v *float64) sql.NullString {
 	if v == nil {
 		return sql.NullString{Valid: false}
 	}
-	s := fmt.Sprintf("%.6f", *v) // хватит точности, и не раздуваем строку
+	s := fmt.Sprintf("%.6f", *v)
 	if len(s) > 50 {
 		s = s[:50]
 	}
 	return sql.NullString{String: s, Valid: true}
 }
 
-func mustEnv(k string) string {
-	v := os.Getenv(k)
-	if v == "" {
-		fmt.Println("missing env:", k)
-		os.Exit(1)
+func nullStr(s string) sql.NullString {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return sql.NullString{Valid: false}
 	}
-	return v
+	return sql.NullString{String: s, Valid: true}
 }
 
-func nz(p *int64) int64 {
-	if p == nil {
-		return 0
+func batchInt64(a []int64, size int) [][]int64 {
+	if size <= 0 {
+		size = 100
 	}
-	return *p
+	var out [][]int64
+	for i := 0; i < len(a); i += size {
+		j := i + size
+		if j > len(a) {
+			j = len(a)
+		}
+		out = append(out, a[i:j])
+	}
+	return out
+}
+
+func todayDate(locName string) time.Time {
+	loc, err := time.LoadLocation(locName)
+	if err != nil {
+		loc = time.UTC
+	}
+	now := time.Now().In(loc)
+	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+}
+
+func latestProductsDate(ctx context.Context, db *sql.DB) (time.Time, error) {
+	var d time.Time
+	err := db.QueryRowContext(ctx, `
+		SELECT max(export_date)
+		FROM public.products
+		WHERE sku IS NOT NULL AND sku <> 0
+	`).Scan(&d)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return d, nil
+}
+
+func loadSKUsForProductsDate(ctx context.Context, db *sql.DB, productsDate time.Time) ([]int64, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT DISTINCT sku
+		FROM public.products
+		WHERE export_date = $1
+		  AND sku IS NOT NULL
+		  AND sku <> 0
+		ORDER BY sku
+	`, productsDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var res []int64
+	for rows.Next() {
+		var sku int64
+		if err := rows.Scan(&sku); err != nil {
+			return nil, err
+		}
+		res = append(res, sku)
+	}
+	return res, rows.Err()
 }
 
 func (c *OzonClient) FetchStocks(ctx context.Context, skus []int64) ([]StockItem, error) {
@@ -163,34 +226,11 @@ func (c *OzonClient) FetchStocks(ctx context.Context, skus []int64) ([]StockItem
 		return nil, fmt.Errorf("json decode error: %w, raw=%s", err, string(raw))
 	}
 
+	if len(out.Items) == 0 && len(raw) > 0 {
+		fmt.Println("warning: empty items, raw:", string(raw))
+	}
+
 	return out.Items, nil
-}
-
-// берём sku из products за конкретную дату
-func loadSKUsForDate(ctx context.Context, db *sql.DB, exportDate time.Time) ([]int64, error) {
-	rows, err := db.QueryContext(ctx, `
-		SELECT DISTINCT sku
-		FROM public.products
-		WHERE export_date = $1
-		  AND sku IS NOT NULL
-		ORDER BY sku
-	`, exportDate)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var res []int64
-	for rows.Next() {
-		var sku int64
-		if err := rows.Scan(&sku); err != nil {
-			return nil, err
-		}
-		if sku != 0 {
-			res = append(res, sku)
-		}
-	}
-	return res, rows.Err()
 }
 
 func upsertStocks(ctx context.Context, db *sql.DB, exportDate time.Time, items []StockItem) error {
@@ -261,7 +301,6 @@ func upsertStocks(ctx context.Context, db *sql.DB, exportDate time.Time, items [
 	defer stmt.Close()
 
 	for _, it := range items {
-		// warehouse_id может быть 0? обычно нет — но проверим
 		if it.SKU == 0 || it.WarehouseID == 0 {
 			continue
 		}
@@ -271,14 +310,11 @@ func upsertStocks(ctx context.Context, db *sql.DB, exportDate time.Time, items [
 			it.SKU, nullStr(it.Name), nullStr(it.OfferID),
 			it.WarehouseID, nullStr(it.WarehouseName),
 
-			// В БД cluster_id varchar(50), поэтому сохраняем как строку
 			str50FromInt64(it.ClusterID),
 			nullStr(it.ClusterName),
 
-			// item_tag varchar(100): кладём item_tags как CSV
 			tagsToStr(it.ItemTags),
 
-			// adv_days_without_sales integer: кладём days_without_sales
 			nz(it.DaysWithoutSales),
 
 			nullStr(it.TurnoverGrade),
@@ -287,45 +323,17 @@ func upsertStocks(ctx context.Context, db *sql.DB, exportDate time.Time, items [
 			nz(it.TransitStockCount), nz(it.TransitDefectStockCount), nz(it.StockDefectStockCount), nz(it.ExcessStockCount),
 			nz(it.OtherStockCount), nz(it.RequestedStockCount), nz(it.ReturnFromCustomerCount), nz(it.ReturnToSellerCount),
 
-			// последние 4 поля в БД varchar(50) — кладём туда кластерные метрики строкой
 			str50FromInt64Ptr(it.IDCCluster),
 			str50FromFloat64Ptr(it.AdsCluster),
 			nullStr(it.TurnoverGradeCluster),
 			str50FromInt64Ptr(it.DaysWithoutSalesCluster),
 		)
-
 		if err != nil {
 			return fmt.Errorf("insert failed sku=%d wh=%d: %w", it.SKU, it.WarehouseID, err)
 		}
 	}
 
 	return tx.Commit()
-}
-
-func nullStr(s string) sql.NullString {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return sql.NullString{Valid: false}
-	}
-	return sql.NullString{
-		String: s,
-		Valid:  true,
-	}
-}
-
-func batchInt64(a []int64, size int) [][]int64 {
-	if size <= 0 {
-		size = 100
-	}
-	var out [][]int64
-	for i := 0; i < len(a); i += size {
-		j := i + size
-		if j > len(a) {
-			j = len(a)
-		}
-		out = append(out, a[i:j])
-	}
-	return out
 }
 
 func main() {
@@ -345,16 +353,25 @@ func main() {
 		panic(err)
 	}
 
-	// export_date = сегодня UTC (можешь заменить на "today in Moscow" при желании)
-	exportDate := time.Now().UTC().Truncate(24 * time.Hour)
-
-	skus, err := loadSKUsForDate(ctx, db, exportDate)
+	exportDate := todayDate("Europe/Moscow")
+	productsDate, err := latestProductsDate(ctx, db)
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println("skus for export_date:", exportDate.Format("2006-01-02"), "count:", len(skus))
+	if productsDate.IsZero() {
+		fmt.Println("no products data found (max export_date is NULL)")
+		return
+	}
+
+	skus, err := loadSKUsForProductsDate(ctx, db, productsDate)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println("stocks export_date:", exportDate.Format("2006-01-02"))
+	fmt.Println("skus from products_date:", productsDate.Format("2006-01-02"), "count:", len(skus))
 	if len(skus) == 0 {
-		fmt.Println("no skus found in products for this date")
+		fmt.Println("no skus found for products_date")
 		return
 	}
 
@@ -367,7 +384,6 @@ func main() {
 	}
 
 	totalInserted := 0
-
 	for bi, part := range batchInt64(skus, 100) {
 		fmt.Printf("batch %d: %d skus\n", bi+1, len(part))
 
@@ -376,13 +392,8 @@ func main() {
 			panic(err)
 		}
 		fmt.Println("  received items:", len(items))
-		//for _, row := range rows {
-		//	b, _ := json.MarshalIndent(row, "", "  ")
-		//	fmt.Println(string(b))
-		//}
 
 		if len(items) > 0 {
-			// debug sample
 			s := items[0]
 			fmt.Printf("  sample: sku=%d wh=%d avail=%d valid=%d grade=%s\n",
 				s.SKU, s.WarehouseID, nz(s.AvailableStockCount), nz(s.ValidStockCount), s.TurnoverGrade)
