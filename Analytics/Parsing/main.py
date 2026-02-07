@@ -6,9 +6,11 @@ from decimal import Decimal, InvalidOperation
 import requests
 from bs4 import BeautifulSoup
 from psycopg import connect
+from dotenv import load_dotenv
 
 
 logger = logging.getLogger("product_costs_snapshot")
+load_dotenv(dotenv_path="../.env")
 
 BASE = "https://secretlines.ru/ozon_analytics"
 INDEX_URL = f"{BASE}/index.php"
