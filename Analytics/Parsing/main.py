@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 import psycopg
 import requests
 from bs4 import BeautifulSoup
-from psycopg2.extras import execute_values
+from psycopg.extras import execute_values
 
 logger = logging.getLogger(__name__)
 
