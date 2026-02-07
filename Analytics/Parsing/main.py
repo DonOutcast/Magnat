@@ -4,7 +4,7 @@ import datetime as dt
 from decimal import Decimal, InvalidOperation
 
 
-import psycopg2
+import psycopg
 import requests
 from bs4 import BeautifulSoup
 from psycopg2.extras import execute_values
