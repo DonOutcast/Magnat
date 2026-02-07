@@ -271,4 +271,49 @@ create table IF NOT EXISTS warehouse_cluster_map (
   updated_at     timestamptz not null default now()
 );
 
+
+CREATE TABLE IF NOT EXISTS product_costs (
+                               export_date     DATE NOT NULL,
+                               created_at      TIMESTAMP NOT NULL DEFAULT now(),
+                               article         VARCHAR(100) NOT NULL,
+
+                               calculated_price        DECIMAL(12,2),
+                               purchase_price          DECIMAL(12,2),
+                               pack_quantity           INTEGER CHECK (pack_quantity >= 0),
+                               packing_work_cost       DECIMAL(12,2),
+                               acquiring_percent       DECIMAL(5,2)
+                                   CHECK (acquiring_percent IS NULL
+                                       OR acquiring_percent BETWEEN 0 AND 100),
+
+                               warehouse_unloading     BOOLEAN NOT NULL DEFAULT false,
+                               withdraw_from_sale      BOOLEAN NOT NULL DEFAULT false,
+                               testing_status          TEXT,
+                               testing_success         BOOLEAN NOT NULL DEFAULT false,
+                               hidden                  BOOLEAN NOT NULL DEFAULT false,
+                               stop_shipments          BOOLEAN NOT NULL DEFAULT false,
+
+
+                               embedded_ads_rules              TEXT,
+                               ozon_commission_markup_rules    TEXT,
+                               logistics_markup_rules          TEXT,
+
+
+                               CONSTRAINT pk_product_costs
+                                   PRIMARY KEY (export_date, article)
+);
+
+CREATE INDEX IF NOT EXISTS  idx_product_costs_article
+    ON product_costs(article);
+
+CREATE INDEX IF NOT EXISTS  idx_product_costs_export_date
+    ON product_costs(export_date);
+
+CREATE INDEX IF NOT EXISTS  idx_product_costs_today_flags
+    ON product_costs(export_date)
+    WHERE hidden = true
+       OR stop_shipments = true
+       OR withdraw_from_sale = true;
+
+
+
 COMMIT;
