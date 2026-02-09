@@ -258,6 +258,29 @@ func mustEnv(k string) string {
 	return v
 }
 
+func debugCSV(csvText string) {
+	fmt.Println("========== DEBUG CSV START ==========")
+
+	fmt.Println("TOTAL LENGTH:", len(csvText))
+
+	// покажем первые 800 символов
+	limit := 800
+	if len(csvText) < limit {
+		limit = len(csvText)
+	}
+	fmt.Println("FIRST BYTES:\n")
+	fmt.Println(csvText[:limit])
+
+	fmt.Println("\n---- RAW LINES (first 10) ----")
+
+	lines := strings.Split(csvText, "\n")
+	for i := 0; i < len(lines) && i < 10; i++ {
+		fmt.Printf("[%d] %s\n", i+1, lines[i])
+	}
+
+	fmt.Println("========== DEBUG CSV END ==========")
+}
+
 func main() {
 	ctx := context.Background()
 	_ = godotenv.Load("../.env")
@@ -297,6 +320,8 @@ func main() {
 
 	// отчёт может быть не готов — сделаем polling
 	csvText, err := waitReportCSV(ctx, client, uuid, 30, 5*time.Second)
+	debugCSV(csvText)
+
 	if err != nil {
 		panic(err)
 	}
@@ -376,8 +401,12 @@ func parseAdsCSV(csvText string, exportDate time.Time) ([]AdsRow, error) {
 	}
 
 	idx := make(map[string]int, len(header))
+	fmt.Println("HEADER FIELDS COUNT:", len(header))
 	for i, h := range header {
+		fmt.Printf("[%d] %s\n", i, normHeader(h))
+
 		idx[normHeader(h)] = i
+
 	}
 
 	get := func(row []string, name string) string {
