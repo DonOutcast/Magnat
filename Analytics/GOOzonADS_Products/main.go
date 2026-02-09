@@ -541,40 +541,56 @@ CREATE TEMP TABLE tmp_ads_products (
 
 	_, err = tx.Exec(ctx, `
 INSERT INTO ads_products (
-	export_date,
-	sku, article,
-	product_name, category,
-	promotion_status, last_change_info,
-	product_price, bid_percent, bid_amount,
-	cpc_sales_amount, cpc_orders_count, cpc_spend_amount,
-	cpo_spend_amount, cpo_sales_amount, cpo_orders_count, cpo_drr_percent
+  export_date,
+  sku, article,
+  product_name, category,
+  promotion_status, last_change_info,
+  product_price, bid_percent, bid_amount,
+  cpc_sales_amount, cpc_orders_count, cpc_spend_amount,
+  cpo_spend_amount, cpo_sales_amount, cpo_orders_count, cpo_drr_percent
 )
 SELECT
-	export_date,
-	sku, article,
-	product_name, category,
-	promotion_status, last_change_info,
-	product_price, bid_percent, bid_amount,
-	cpc_sales_amount, cpc_orders_count, cpc_spend_amount,
-	cpo_spend_amount, cpo_sales_amount, cpo_orders_count, cpo_drr_percent
-FROM tmp_ads_products
+  export_date,
+  sku, article,
+  product_name, category,
+  promotion_status, last_change_info,
+  product_price, bid_percent, bid_amount,
+  cpc_sales_amount, cpc_orders_count, cpc_spend_amount,
+  cpo_spend_amount, cpo_sales_amount, cpo_orders_count, cpo_drr_percent
+FROM (
+  SELECT DISTINCT ON (export_date, article)
+    export_date,
+    sku, article,
+    product_name, category,
+    promotion_status, last_change_info,
+    product_price, bid_percent, bid_amount,
+    cpc_sales_amount, cpc_orders_count, cpc_spend_amount,
+    cpo_spend_amount, cpo_sales_amount, cpo_orders_count, cpo_drr_percent
+  FROM tmp_ads_products
+  ORDER BY export_date, article,
+           -- правило выбора "лучшей" строки среди дублей:
+           -- 1) где больше продаж/расхода, 2) где есть SKU, 3) что угодно
+           COALESCE(cpo_sales_amount, 0) DESC,
+           COALESCE(cpc_sales_amount, 0) DESC,
+           (sku IS NOT NULL) DESC
+) t
 ON CONFLICT (export_date, article) DO UPDATE SET
-	sku = EXCLUDED.sku,
-	product_name = EXCLUDED.product_name,
-	category = EXCLUDED.category,
-	promotion_status = EXCLUDED.promotion_status,
-	last_change_info = EXCLUDED.last_change_info,
-	product_price = EXCLUDED.product_price,
-	bid_percent = EXCLUDED.bid_percent,
-	bid_amount = EXCLUDED.bid_amount,
-	cpc_sales_amount = EXCLUDED.cpc_sales_amount,
-	cpc_orders_count = EXCLUDED.cpc_orders_count,
-	cpc_spend_amount = EXCLUDED.cpc_spend_amount,
-	cpo_spend_amount = EXCLUDED.cpo_spend_amount,
-	cpo_sales_amount = EXCLUDED.cpo_sales_amount,
-	cpo_orders_count = EXCLUDED.cpo_orders_count,
-	cpo_drr_percent = EXCLUDED.cpo_drr_percent
-;
+  sku = EXCLUDED.sku,
+  product_name = EXCLUDED.product_name,
+  category = EXCLUDED.category,
+  promotion_status = EXCLUDED.promotion_status,
+  last_change_info = EXCLUDED.last_change_info,
+  product_price = EXCLUDED.product_price,
+  bid_percent = EXCLUDED.bid_percent,
+  bid_amount = EXCLUDED.bid_amount,
+  cpc_sales_amount = EXCLUDED.cpc_sales_amount,
+  cpc_orders_count = EXCLUDED.cpc_orders_count,
+  cpc_spend_amount = EXCLUDED.cpc_spend_amount,
+  cpo_spend_amount = EXCLUDED.cpo_spend_amount,
+  cpo_sales_amount = EXCLUDED.cpo_sales_amount,
+  cpo_orders_count = EXCLUDED.cpo_orders_count,
+  cpo_drr_percent = EXCLUDED.cpo_drr_percent;
+
 `)
 	if err != nil {
 		return err
