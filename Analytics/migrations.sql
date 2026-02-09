@@ -315,5 +315,43 @@ CREATE INDEX IF NOT EXISTS  idx_product_costs_today_flags
        OR withdraw_from_sale = true;
 
 
+CREATE TABLE ads_products (
+                              export_date DATE NOT NULL,
+                              created_at TIMESTAMP NOT NULL DEFAULT now(),
+
+                              sku BIGINT,
+                              article VARCHAR(100) NOT NULL,
+
+                              product_name TEXT,
+                              category VARCHAR(255),
+
+                              promotion_status VARCHAR(50),
+                              last_change_info TEXT,
+
+                              product_price DECIMAL(12,2),
+                              bid_percent DECIMAL(5,2)
+                                  CHECK (bid_percent IS NULL OR bid_percent BETWEEN 0 AND 100),
+                              bid_amount DECIMAL(12,2),
+
+                              cpc_sales_amount DECIMAL(14,2),
+                              cpc_orders_count INTEGER,
+                              cpc_spend_amount DECIMAL(14,2),
+
+                              cpo_spend_amount DECIMAL(14,2),
+                              cpo_sales_amount DECIMAL(14,2),
+                              cpo_orders_count INTEGER,
+                              cpo_drr_percent DECIMAL(6,2)
+                                  CHECK (cpo_drr_percent IS NULL OR cpo_drr_percent BETWEEN 0 AND 100),
+
+                              PRIMARY KEY (export_date, article)
+);
+
+CREATE INDEX idx_ads_products_date_article
+    ON ads_products(export_date, article);
+
+CREATE INDEX idx_ads_products_sku
+    ON ads_products(sku);
+
+
 
 COMMIT;
