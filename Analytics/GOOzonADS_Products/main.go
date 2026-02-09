@@ -19,6 +19,7 @@ import (
 )
 
 const (
+	tokenEndpoint  = "https://api-performance.ozon.ru/api/client/token"
 	genEndpoint    = "https://api-performance.ozon.ru:443/api/client/statistic/products/generate"
 	reportEndpoint = "https://api-performance.ozon.ru:443/api/client/statistics/report"
 )
@@ -202,12 +203,76 @@ type AdsRow struct {
 	CpoDrrPercent  *string // может отсутствовать
 }
 
+type TokenRequest struct {
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+	GrantType    string `json:"grant_type"`
+}
+
+type TokenResponse struct {
+	AccessToken string `json:"access_token"`
+	// expires_in и т.п. можно добавить при желании
+}
+
+func fetchToken(ctx context.Context, httpc *http.Client, clientID, secret string) (string, error) {
+	body, _ := json.Marshal(TokenRequest{
+		ClientID:     clientID,
+		ClientSecret: secret,
+		GrantType:    "client_credentials",
+	})
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("token http %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var tr TokenResponse
+	if err := json.Unmarshal(raw, &tr); err != nil {
+		return "", fmt.Errorf("token json decode: %w, raw=%s", err, string(raw))
+	}
+	if tr.AccessToken == "" {
+		return "", fmt.Errorf("empty access_token, raw=%s", string(raw))
+	}
+	return tr.AccessToken, nil
+}
+
+func mustEnv(k string) string {
+	v := strings.TrimSpace(os.Getenv(k))
+	if v == "" {
+		fmt.Println("missing env:", k)
+		os.Exit(1)
+	}
+	return v
+}
+
 func main() {
 	ctx := context.Background()
 	_ = godotenv.Load("../.env")
 
-	token := os.Getenv("OZON_PERF_TOKEN")
-	pgDsn := os.Getenv("PG_DSN")
+	pgDsn := mustEnv("PG_DSN")
+	perfClientID := mustEnv("OZON_PERF_CLIENT_ID")
+	perfSecret := mustEnv("OZON_PERF_SECRET")
+
+	httpc := &http.Client{Timeout: 120 * time.Second}
+
+	token, err := fetchToken(ctx, httpc, perfClientID, perfSecret)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("token ok")
 
 	if token == "" || pgDsn == "" {
 		fmt.Println("Need env vars: OZON_PERF_TOKEN, PG_DSN")
