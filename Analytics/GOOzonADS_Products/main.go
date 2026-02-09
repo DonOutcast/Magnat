@@ -320,7 +320,7 @@ func main() {
 
 	// отчёт может быть не готов — сделаем polling
 	csvText, err := waitReportCSV(ctx, client, uuid, 30, 5*time.Second)
-	debugCSV(csvText)
+	//debugCSV(csvText)
 
 	if err != nil {
 		panic(err)
@@ -388,6 +388,8 @@ func parseAdsCSV(csvText string, exportDate time.Time) ([]AdsRow, error) {
 	r := csv.NewReader(strings.NewReader(csvText))
 	r.Comma = ';'
 	r.LazyQuotes = true
+	r.TrimLeadingSpace = true
+	r.FieldsPerRecord = -1
 
 	// skip first row
 	_, err := r.Read()
@@ -401,9 +403,9 @@ func parseAdsCSV(csvText string, exportDate time.Time) ([]AdsRow, error) {
 	}
 
 	idx := make(map[string]int, len(header))
-	fmt.Println("HEADER FIELDS COUNT:", len(header))
+	//fmt.Println("HEADER FIELDS COUNT:", len(header))
 	for i, h := range header {
-		fmt.Printf("[%d] %s\n", i, normHeader(h))
+		//fmt.Printf("[%d] %s\n", i, normHeader(h))
 
 		idx[normHeader(h)] = i
 
@@ -443,24 +445,25 @@ func parseAdsCSV(csvText string, exportDate time.Time) ([]AdsRow, error) {
 			Article: *articlePtr,
 
 			ProductName: cleanStr(get(rec, "Название товара")),
-			Category:    cleanStr(get(rec, "Категория")),
+			Category:    cleanStr(get(rec, "Категория товара")),
 
-			PromotionStatus: cleanStr(get(rec, "Статус продвижения")),
-			LastChangeInfo:  cleanStr(get(rec, "Последнее изменение статуса продвижения")),
+			PromotionStatus: cleanStr(get(rec, "Продвижение")),
+			LastChangeInfo:  cleanStr(get(rec, "Последнее изменение")),
 
 			ProductPrice: toNumericString(get(rec, "Цена товара, ₽")),
 			BidPercent:   toNumericString(get(rec, "Ставка, %")),
 			BidAmount:    toNumericString(get(rec, "Ставка, ₽")),
 
-			CpcSalesAmount: toNumericString(get(rec, "Продажи (CPC), ₽")),
-			CpcOrdersCount: toInt32(get(rec, "Заказы (CPC), шт")),
-			CpcSpendAmount: toNumericString(get(rec, "Расход (CPC), ₽")),
+			// CPC
+			CpcSalesAmount: toNumericString(get(rec, `Продажи ("Оплата за клики"), ₽`)),
+			CpcOrdersCount: toInt32(get(rec, `Заказы ("Оплата за клики"), шт.`)),
+			CpcSpendAmount: toNumericString(get(rec, `Расход ("Оплата за клики"), ₽`)),
 
-			CpoSpendAmount: toNumericString(get(rec, "Расход (CPO), ₽")),
-			CpoSalesAmount: toNumericString(get(rec, "Продажи (CPO), ₽")),
-			CpoOrdersCount: toInt32(get(rec, "Заказы (CPO), шт")),
-			// может отсутствовать в CSV => просто nil
-			CpoDrrPercent: toNumericString(get(rec, "ДРР (CPO), %")),
+			// CPO
+			CpoSpendAmount: toNumericString(get(rec, `Расход ("Оплата за заказ"), ₽`)),
+			CpoSalesAmount: toNumericString(get(rec, `Продажи ("Оплата за заказ"), ₽`)),
+			CpoOrdersCount: toInt32(get(rec, `Заказы ("Оплата за заказ"), шт.`)),
+			CpoDrrPercent:  toNumericString(get(rec, `ДРР ("Оплата за заказ"), %`)),
 		}
 
 		out = append(out, row)
