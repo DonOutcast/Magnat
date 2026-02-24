@@ -18,6 +18,160 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+type TgSendMessageRequest struct {
+	ChatID                string `json:"chat_id"`
+	Text                  string `json:"text"`
+	DisableWebPagePreview bool   `json:"disable_web_page_preview"`
+}
+
+type TgSendMessageResponse struct {
+	Ok          bool            `json:"ok"`
+	Description string          `json:"description"`
+	Result      json.RawMessage `json:"result"`
+}
+
+func sendTelegramMessage(ctx context.Context, httpc *http.Client, botToken, chatID, text string) error {
+	if strings.TrimSpace(botToken) == "" || strings.TrimSpace(chatID) == "" {
+		return fmt.Errorf("telegram creds are empty (TG_BOT_TOKEN / TG_CHAT_ID)")
+	}
+
+	// Telegram лимит по длине сообщения ~4096 символов.
+	// Чтобы не падать — порежем.
+	const maxLen = 3900
+	if len(text) > maxLen {
+		text = text[:maxLen] + "\n\n...(truncated)"
+	}
+
+	url := "https://api.telegram.org/bot" + botToken + "/sendMessage"
+
+	payload, _ := json.Marshal(TgSendMessageRequest{
+		ChatID:                chatID,
+		Text:                  text,
+		DisableWebPagePreview: true,
+	})
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("telegram http %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var tr TgSendMessageResponse
+	if err := json.Unmarshal(raw, &tr); err != nil {
+		return fmt.Errorf("telegram json decode: %w, raw=%s", err, string(raw))
+	}
+	if !tr.Ok {
+		return fmt.Errorf("telegram api not ok: %s", tr.Description)
+	}
+	return nil
+}
+
+func getMoscowLoc() *time.Location {
+	loc, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		return time.FixedZone("MSK", 3*60*60)
+	}
+	return loc
+}
+
+func envBool(key string, def bool) bool {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	v = strings.ToLower(v)
+	return v == "1" || v == "true" || v == "yes" || v == "y"
+}
+
+func envInt(key string, def int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	if i, err := strconv.Atoi(v); err == nil {
+		return i
+	}
+	return def
+}
+
+type DatePlan struct {
+	// для orders (RFC3339 UTC)
+	FromRFC3339 string
+	ToRFC3339   string
+
+	// для daily (без времени)
+	FromDate string // YYYY-MM-DD
+	ToDate   string // YYYY-MM-DD
+
+	// для search (окно)
+	FromSearch string // YYYY-MM-DD
+	ToSearch   string // YYYY-MM-DD
+
+	// target date
+	TargetDate string // YYYY-MM-DD
+}
+
+func resolveDatePlan() DatePlan {
+	useEnv := envBool("USE_ENV_DATES", false)
+	loc := getMoscowLoc()
+	now := time.Now().In(loc)
+
+	// сегодня 00:00 по Москве
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+
+	// вчера: [00:00:00 .. 23:59:59] по Москве
+	yStart := todayStart.AddDate(0, 0, -1)
+	yEnd := yStart.Add(24*time.Hour - time.Second)
+
+	// для search: последние N дней до "вчера" включительно
+	searchDays := envInt("SEARCH_DAYS_BACK", 30)
+	if searchDays < 1 {
+		searchDays = 30
+	}
+	searchFrom := yStart.AddDate(0, 0, -(searchDays - 1)) // включая вчера = N дней
+
+	// по умолчанию — авто режим (вчера)
+	p := DatePlan{
+		FromRFC3339: yStart.UTC().Format(time.RFC3339),
+		ToRFC3339:   yEnd.UTC().Format(time.RFC3339),
+
+		FromDate: yStart.Format("2006-01-02"),
+		ToDate:   yStart.Format("2006-01-02"), // один день
+
+		FromSearch: searchFrom.Format("2006-01-02"),
+		ToSearch:   yStart.Format("2006-01-02"),
+
+		TargetDate: yStart.Format("2006-01-02"),
+	}
+
+	// ручной режим: берём из env
+	if useEnv {
+		p.FromRFC3339 = mustEnv("PROCESSED_FROM")
+		p.ToRFC3339 = mustEnv("PROCESSED_TO")
+
+		p.FromDate = mustEnv("PROCESSED_FROM_WITHOUT_TIME")
+		p.ToDate = mustEnv("PROCESSED_TO_WITHOUT_TIME")
+
+		p.FromSearch = mustEnv("PROCESSED_FROM_SEARCH")
+		p.ToSearch = mustEnv("PROCESSED_TO_SEARCH")
+
+		p.TargetDate = mustEnv("TARGET_DATE")
+	}
+
+	return p
+}
+
 const (
 	tokenEndpoint  = "https://api-performance.ozon.ru/api/client/token"
 	genEndpoint    = "https://api-performance.ozon.ru:443/api/client/statistic/products/generate"
@@ -288,22 +442,89 @@ func main() {
 	pgDsn := mustEnv("PG_DSN")
 	perfClientID := mustEnv("OZON_PERF_CLIENT_ID")
 	perfSecret := mustEnv("OZON_PERF_SECRET")
+	tgToken := strings.TrimSpace(os.Getenv("TG_BOT_TOKEN"))
+	tgChatID := strings.TrimSpace(os.Getenv("TG_CHAT_ID"))
 
 	httpc := &http.Client{Timeout: 120 * time.Second}
 
+	// Для отчёта в телеграм
+	targetDate := mustTargetDate()
+	var uuid string
+	parsedRows := -1
+	var finalErr error
+
+	// ✅ единая отправка результата (OK/ERROR) при любом выходе
+	defer func() {
+		if r := recover(); r != nil {
+			// превратим panic в error
+			switch x := r.(type) {
+			case error:
+				finalErr = x
+			default:
+				finalErr = fmt.Errorf("%v", x)
+			}
+		}
+
+		if tgToken == "" || tgChatID == "" {
+			// телеги нет — просто выходим
+			if finalErr != nil {
+				// чтобы panic не "проглотился" в режиме без телеги
+				panic(finalErr)
+			}
+			return
+		}
+
+		status := "✅"
+		if finalErr != nil {
+			status = "❌"
+		}
+
+		// uuid может быть пустой, rows может быть -1
+		uuidText := uuid
+		if uuidText == "" {
+			uuidText = "-"
+		}
+		rowsText := "n/a"
+		if parsedRows >= 0 {
+			rowsText = strconv.Itoa(parsedRows)
+		}
+
+		text := fmt.Sprintf(
+			"ADS_Products %s\ndate=%s\nuuid=%s\nparsed_rows=%s",
+			status,
+			targetDate.In(getMoscowLoc()).Format("2006-01-02"),
+			uuidText,
+			rowsText,
+		)
+
+		// Добавим ошибку (обрежется внутри sendTelegramMessage)
+		if finalErr != nil {
+			text += "\nerror=" + finalErr.Error()
+		}
+
+		if err := sendTelegramMessage(ctx, httpc, tgToken, tgChatID, text); err != nil {
+			fmt.Println("telegram send failed:", err)
+		}
+
+		// если был panic — пробросим дальше, чтобы крон/мониторинг видел ненулевой exit
+		if finalErr != nil {
+			panic(finalErr)
+		}
+	}()
+
+	// --- обычная логика ---
+
 	token, err := fetchToken(ctx, httpc, perfClientID, perfSecret)
 	if err != nil {
+		finalErr = err
 		panic(err)
 	}
 	fmt.Println("token ok")
 
 	if token == "" || pgDsn == "" {
-		fmt.Println("Need env vars: OZON_PERF_TOKEN, PG_DSN")
-		os.Exit(1)
+		finalErr = fmt.Errorf("need env vars: OZON_PERF_TOKEN, PG_DSN")
+		panic(finalErr)
 	}
-
-	// По умолчанию грузим за вчера (по Москве, как в твоём примере +03:00)
-	targetDate := mustTargetDate()
 
 	fromISO, toISO := dayRangeMoscowISO(targetDate)
 
@@ -312,32 +533,36 @@ func main() {
 		HTTP:  &http.Client{Timeout: 90 * time.Second},
 	}
 
-	uuid, err := client.GenerateUUID(ctx, fromISO, toISO)
+	uuid, err = client.GenerateUUID(ctx, fromISO, toISO)
 	if err != nil {
+		finalErr = err
 		panic(err)
 	}
 	fmt.Println("UUID:", uuid)
 
-	// отчёт может быть не готов — сделаем polling
 	csvText, err := waitReportCSV(ctx, client, uuid, 30, 5*time.Second)
-	//debugCSV(csvText)
-
 	if err != nil {
+		finalErr = err
 		panic(err)
 	}
 
 	rows, err := parseAdsCSV(csvText, targetDate)
 	if err != nil {
+		finalErr = err
 		panic(err)
 	}
 
-	fmt.Println("parsed rows:", len(rows))
-	if len(rows) == 0 {
+	parsedRows = len(rows)
+	fmt.Println("parsed rows:", parsedRows)
+
+	if parsedRows == 0 {
+		// Это не ошибка — просто нет данных
 		fmt.Println("no data to insert")
 		return
 	}
 
 	if err := upsertAdsProducts(ctx, pgDsn, rows); err != nil {
+		finalErr = err
 		panic(err)
 	}
 
@@ -345,17 +570,23 @@ func main() {
 }
 
 func mustTargetDate() time.Time {
-	// Можно вручную: TARGET_DATE=2026-02-07
-	if v := os.Getenv("TARGET_DATE"); v != "" {
+	// 1) ручной режим: TARGET_DATE=YYYY-MM-DD
+	if v := strings.TrimSpace(os.Getenv("TARGET_DATE")); v != "" {
 		t, err := time.Parse("2006-01-02", v)
 		if err != nil {
 			panic("bad TARGET_DATE, expected YYYY-MM-DD")
 		}
 		return t
 	}
-	// по умолчанию вчера (UTC -> безопасно)
-	now := time.Now().UTC()
-	return now.AddDate(0, 0, -1).Truncate(24 * time.Hour)
+
+	// 2) авто-режим: вчера по Москве
+	loc := getMoscowLoc()
+	now := time.Now().In(loc)
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	yesterdayStart := todayStart.AddDate(0, 0, -1)
+
+	// возвращаем "день" (в московской зоне) — time.Date уже в loc
+	return yesterdayStart
 }
 
 func dayRangeMoscowISO(day time.Time) (string, string) {

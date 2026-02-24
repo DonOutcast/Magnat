@@ -17,6 +17,88 @@ import (
 	"github.com/joho/godotenv"
 )
 
+type TgSendMessageRequest struct {
+	ChatID                string `json:"chat_id"`
+	Text                  string `json:"text"`
+	DisableWebPagePreview bool   `json:"disable_web_page_preview"`
+}
+
+type TgSendMessageResponse struct {
+	Ok          bool            `json:"ok"`
+	Description string          `json:"description"`
+	Result      json.RawMessage `json:"result"`
+}
+
+func sendTelegramMessage(ctx context.Context, httpc *http.Client, botToken, chatID, text string) error {
+	if strings.TrimSpace(botToken) == "" || strings.TrimSpace(chatID) == "" {
+		return fmt.Errorf("telegram creds are empty (TG_BOT_TOKEN / TG_CHAT_ID)")
+	}
+
+	const maxLen = 3900
+	if len(text) > maxLen {
+		text = text[:maxLen] + "\n\n...(truncated)"
+	}
+
+	url := "https://api.telegram.org/bot" + botToken + "/sendMessage"
+	payload, _ := json.Marshal(TgSendMessageRequest{
+		ChatID:                chatID,
+		Text:                  text,
+		DisableWebPagePreview: true,
+	})
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("telegram http %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var tr TgSendMessageResponse
+	if err := json.Unmarshal(raw, &tr); err != nil {
+		return fmt.Errorf("telegram json decode: %w, raw=%s", err, string(raw))
+	}
+	if !tr.Ok {
+		return fmt.Errorf("telegram api not ok: %s", tr.Description)
+	}
+	return nil
+}
+
+func getMoscowLoc() *time.Location {
+	loc, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		return time.FixedZone("MSK", 3*60*60)
+	}
+	return loc
+}
+
+func yesterdayMoscowUTCDate() time.Time {
+	loc := getMoscowLoc()
+	now := time.Now().In(loc)
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	yStart := todayStart.AddDate(0, 0, -1) // вчера 00:00 по МСК
+	// возвращаем как UTC-день (полночь UTC не важна, важен “календарный день”)
+	return yStart.UTC().Truncate(24 * time.Hour)
+}
+
+func envBool(key string, def bool) bool {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	v = strings.ToLower(v)
+	return v == "1" || v == "true" || v == "yes" || v == "y"
+}
+
 type OzonClient struct {
 	ClientID string
 	APIKey   string
@@ -306,13 +388,69 @@ func main() {
 	ctx := context.Background()
 	_ = godotenv.Load("../.env")
 
-	// ВАЖНО: для цикла по дням удобнее, чтобы env были в формате YYYY-MM-DD
-	// но поддержим и RFC3339.
-	fromEnv := mustEnv("PROCESSED_FROM_SEARCH")
-	toEnv := mustEnv("PROCESSED_TO_SEARCH")
+	tgToken := strings.TrimSpace(os.Getenv("TG_BOT_TOKEN"))
+	tgChatID := strings.TrimSpace(os.Getenv("TG_CHAT_ID"))
+
+	httpc := &http.Client{Timeout: 120 * time.Second}
 
 	limit := flag.Int("limit", 1000, "limit per request")
 	flag.Parse()
+
+	var finalErr error
+	var startDate, endDate time.Time
+	totalInserted := 0
+
+	defer func() {
+		if r := recover(); r != nil {
+			switch x := r.(type) {
+			case error:
+				finalErr = x
+			default:
+				finalErr = fmt.Errorf("%v", x)
+			}
+		}
+
+		if tgToken == "" || tgChatID == "" {
+			if finalErr != nil {
+				panic(finalErr)
+			}
+			return
+		}
+
+		status := "✅"
+		if finalErr != nil {
+			status = "❌"
+		}
+
+		fromTxt := "-"
+		toTxt := "-"
+		if !startDate.IsZero() {
+			fromTxt = startDate.UTC().Truncate(24 * time.Hour).Format("2006-01-02")
+		}
+		if !endDate.IsZero() {
+			toTxt = endDate.UTC().Truncate(24 * time.Hour).Format("2006-01-02")
+		}
+
+		text := fmt.Sprintf(
+			"SearchPosition %s\nfrom=%s\nto=%s\nlimit=%d\ntotal_upserted=%d",
+			status,
+			fromTxt,
+			toTxt,
+			*limit,
+			totalInserted,
+		)
+		if finalErr != nil {
+			text += "\nerror=" + finalErr.Error()
+		}
+
+		if err := sendTelegramMessage(ctx, httpc, tgToken, tgChatID, text); err != nil {
+			fmt.Println("telegram send failed:", err)
+		}
+
+		if finalErr != nil {
+			panic(finalErr)
+		}
+	}()
 
 	clientID := mustEnv("OZON_CLIENT_ID")
 	apiKey := mustEnv("OZON_API_KEY")
@@ -329,28 +467,51 @@ func main() {
 		},
 	}
 
-	startDate, err := parseAnyDate(fromEnv)
-	if err != nil {
-		panic(err)
+	useEnvDates := envBool("USE_ENV_DATES", false)
+
+	if useEnvDates {
+		fromEnv := mustEnv("PROCESSED_FROM_SEARCH")
+		toEnv := mustEnv("PROCESSED_TO_SEARCH")
+
+		var err error
+		startDate, err = parseAnyDate(fromEnv)
+		if err != nil {
+			finalErr = err
+			panic(err)
+		}
+		endDate, err = parseAnyDate(toEnv)
+		if err != nil {
+			finalErr = err
+			panic(err)
+		}
+	} else {
+		loc := getMoscowLoc()
+		now := time.Now().In(loc)
+		todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+		yStart := todayStart.AddDate(0, 0, -1) // вчера 00:00 МСК
+
+		// для цикла мы работаем с UTC-днями
+		yUTC := yStart.UTC().Truncate(24 * time.Hour)
+		startDate = yUTC
+		endDate = yUTC
 	}
-	endDate, err := parseAnyDate(toEnv)
-	if err != nil {
-		panic(err)
-	}
+
+	// ---- db ----
 
 	db, err := sql.Open("pgx", pgDsn)
 	if err != nil {
+		finalErr = err
 		panic(err)
 	}
 	defer db.Close()
 
 	if err := db.PingContext(ctx); err != nil {
+		finalErr = err
 		panic(err)
 	}
 
-	totalInserted := 0
+	// ---- run ----
 
-	// отдельный запрос для каждого дня
 	for day := startDate.UTC().Truncate(24 * time.Hour); !day.After(endDate.UTC().Truncate(24 * time.Hour)); day = day.AddDate(0, 0, 1) {
 		fromDay, toDay := dayBoundsUTC(day)
 
@@ -369,19 +530,22 @@ func main() {
 
 			rows, err := oz.FetchSearchPositions(ctx, req)
 			if err != nil {
+				finalErr = err
 				panic(err)
 			}
+
+			// чтобы не душить API
 			time.Sleep(1 * time.Second)
 
 			if len(rows) > 0 {
 				if err := upsertSearchPositions(ctx, db, rows); err != nil {
+					finalErr = err
 					panic(err)
 				}
 				dayRows += len(rows)
 				totalInserted += len(rows)
 			}
 
-			// если вернулось меньше лимита — дальше страниц нет
 			if len(rows) < *limit {
 				break
 			}

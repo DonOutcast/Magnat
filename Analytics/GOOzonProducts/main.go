@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/csv"
 	"encoding/json"
@@ -16,6 +17,85 @@ import (
 
 	"github.com/jackc/pgx/v5"
 )
+
+type TgSendMessageRequest struct {
+	ChatID                string `json:"chat_id"`
+	Text                  string `json:"text"`
+	DisableWebPagePreview bool   `json:"disable_web_page_preview"`
+}
+
+type TgSendMessageResponse struct {
+	Ok          bool            `json:"ok"`
+	Description string          `json:"description"`
+	Result      json.RawMessage `json:"result"`
+}
+
+func sendTelegramMessage(ctx context.Context, httpc *http.Client, botToken, chatID, text string) error {
+	if strings.TrimSpace(botToken) == "" || strings.TrimSpace(chatID) == "" {
+		return fmt.Errorf("telegram creds are empty (TG_BOT_TOKEN / TG_CHAT_ID)")
+	}
+
+	const maxLen = 3900
+	if len(text) > maxLen {
+		text = text[:maxLen] + "\n\n...(truncated)"
+	}
+
+	url := "https://api.telegram.org/bot" + botToken + "/sendMessage"
+	payload, _ := json.Marshal(TgSendMessageRequest{
+		ChatID:                chatID,
+		Text:                  text,
+		DisableWebPagePreview: true,
+	})
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("telegram http %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var tr TgSendMessageResponse
+	if err := json.Unmarshal(raw, &tr); err != nil {
+		return fmt.Errorf("telegram json decode: %w, raw=%s", err, string(raw))
+	}
+	if !tr.Ok {
+		return fmt.Errorf("telegram api not ok: %s", tr.Description)
+	}
+	return nil
+}
+
+func getMoscowLoc() *time.Location {
+	loc, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		return time.FixedZone("MSK", 3*60*60)
+	}
+	return loc
+}
+
+func exportDateTodayMoscowUTC() time.Time {
+	loc := getMoscowLoc()
+	now := time.Now().In(loc)
+	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	return time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+func dash(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "-"
+	}
+	return s
+}
 
 const (
 	createReportEndpoint = "https://api-seller.ozon.ru/v1/report/products/create"
@@ -246,18 +326,76 @@ type ProductRow struct {
 
 func main() {
 	ctx := context.Background()
-	err := godotenv.Load("../.env")
-	if err != nil {
-		fmt.Println("Error loading .env file")
-	}
+	_ = godotenv.Load("../.env")
+
+	tgToken := strings.TrimSpace(os.Getenv("TG_BOT_TOKEN"))
+	tgChatID := strings.TrimSpace(os.Getenv("TG_CHAT_ID"))
+	httpc := &http.Client{Timeout: 120 * time.Second}
 
 	clientID := os.Getenv("OZON_CLIENT_ID")
 	apiKey := os.Getenv("OZON_API_KEY")
 	pgDsn := os.Getenv("PG_DSN")
 
+	var (
+		code       string
+		fileURL    string
+		parsedRows = -1
+		finalErr   error
+	)
+
+	// ✅ единая отправка результата (OK/ERROR) при любом выходе
+	defer func() {
+		if r := recover(); r != nil {
+			switch x := r.(type) {
+			case error:
+				finalErr = x
+			default:
+				finalErr = fmt.Errorf("%v", x)
+			}
+		}
+
+		// отправка в телегу (если задано)
+		if tgToken != "" && tgChatID != "" {
+			status := "✅"
+			if finalErr != nil {
+				status = "❌"
+			} else if parsedRows == 0 {
+				status = "⚠️" // без данных — не ошибка
+			}
+
+			rowsText := "n/a"
+			if parsedRows >= 0 {
+				rowsText = strconv.Itoa(parsedRows)
+			}
+
+			text := fmt.Sprintf(
+				"Products_Report %s\nexport_date=%s\nreport_code=%s\nfile=%s\nrows=%s",
+				status,
+				time.Now().In(getMoscowLoc()).Format("2006-01-02"),
+				dash(code),
+				dash(fileURL),
+				rowsText,
+			)
+			if finalErr != nil {
+				text += "\nerror=" + finalErr.Error()
+			}
+
+			if err := sendTelegramMessage(ctx, httpc, tgToken, tgChatID, text); err != nil {
+				fmt.Println("telegram send failed:", err)
+			}
+		}
+
+		// чтобы cron увидел ошибку
+		if finalErr != nil {
+			panic(finalErr)
+		}
+	}()
+
+	// ---- твоя логика (почти без изменений) ----
+
 	if clientID == "" || apiKey == "" || pgDsn == "" {
-		fmt.Println("Need env vars: OZON_CLIENT_ID, OZON_API_KEY, PG_DSN")
-		os.Exit(1)
+		finalErr = fmt.Errorf("Need env vars: OZON_CLIENT_ID, OZON_API_KEY, PG_DSN")
+		panic(finalErr)
 	}
 
 	oz := &OzonClient{
@@ -269,15 +407,18 @@ func main() {
 	}
 
 	// 1) create report
-	code, err := oz.CreateProductsReport(ctx)
+	var err error
+	code, err = oz.CreateProductsReport(ctx)
 	if err != nil {
+		finalErr = err
 		panic(err)
 	}
 	fmt.Println("report code:", code)
 
-	// 2) get file url (иногда отчёт готовится — можно добавить ретраи, но часто сразу есть)
-	fileURL, err := oz.GetReportFileURL(ctx, code)
+	// 2) get file url (если нужно — потом добавим retry)
+	fileURL, err = oz.GetReportFileURL(ctx, code)
 	if err != nil {
+		finalErr = err
 		panic(err)
 	}
 	fmt.Println("report file:", fileURL)
@@ -285,9 +426,11 @@ func main() {
 	// 3) download CSV
 	body, err := downloadCSV(ctx, oz.HTTP, fileURL)
 	if err != nil {
+		finalErr = err
 		panic(err)
 	}
 	defer body.Close()
+
 	r := csv.NewReader(body)
 	r.Comma = ';'
 	r.LazyQuotes = true
@@ -295,6 +438,7 @@ func main() {
 	// header
 	header, err := r.Read()
 	if err != nil {
+		finalErr = err
 		panic(err)
 	}
 
@@ -302,7 +446,7 @@ func main() {
 		s = strings.TrimSpace(s)
 		s = strings.TrimPrefix(s, "\ufeff") // BOM
 		s = strings.TrimSpace(s)
-		s = strings.Trim(s, `"`) // убрать "...."
+		s = strings.Trim(s, `"`)
 		s = strings.TrimSpace(s)
 		return s
 	}
@@ -321,7 +465,7 @@ func main() {
 		return row[i]
 	}
 
-	exportDate := time.Now().UTC().Truncate(24 * time.Hour)
+	exportDate := exportDateTodayMoscowUTC()
 
 	var rows []ProductRow
 	for {
@@ -330,7 +474,6 @@ func main() {
 			break
 		}
 		if err != nil {
-			// если встретилась кривая строка — лучше логировать и пропускать
 			fmt.Println("csv read error:", err)
 			continue
 		}
@@ -339,11 +482,10 @@ func main() {
 		if articlePtr == nil {
 			continue
 		}
-		article := *articlePtr
 
 		row := ProductRow{
 			ExportDate: exportDate,
-			Article:    article,
+			Article:    *articlePtr,
 
 			OzonProdID: toInt64(get(rec, "Ozon Product ID")),
 			SKU:        toInt64(get(rec, "SKU")),
@@ -371,33 +513,28 @@ func main() {
 			CurrentPrice:        toFloat(get(rec, "Текущая цена с учетом скидки, ₽")),
 			PriceBeforeDiscount: toFloat(get(rec, "Цена до скидки (перечеркнутая цена), ₽")),
 			VatPercent:          toVATPercent(get(rec, "Размер НДС, %")),
-			// в твоём примере этой колонки может не быть — оставим nil, либо добавь правильное имя:
-			// OzonOfferPrice: toFloat(get(rec, "Цена Ozon/Предложения, ₽")),
 
 			CreatedAt: toTime(get(rec, "Дата создания")),
 		}
 
 		rows = append(rows, row)
 	}
-	//for _, row := range rows {
-	//	b, _ := json.MarshalIndent(row, "", "  ")
-	//	fmt.Println(string(b))
-	//}
 
-	fmt.Println("parsed rows:", len(rows))
-	if len(rows) == 0 {
+	parsedRows = len(rows)
+	fmt.Println("parsed rows:", parsedRows)
+
+	if parsedRows == 0 {
 		fmt.Println("no data to insert")
 		return
 	}
 
-	//4) insert/upsert into postgres
 	if err := upsertProducts(ctx, pgDsn, rows); err != nil {
+		finalErr = err
 		panic(err)
 	}
 
 	fmt.Println("done")
 }
-
 func upsertProducts(ctx context.Context, dsn string, rows []ProductRow) error {
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {

@@ -19,6 +19,97 @@ import (
 	"github.com/joho/godotenv"
 )
 
+type TgSendMessageRequest struct {
+	ChatID                string `json:"chat_id"`
+	Text                  string `json:"text"`
+	DisableWebPagePreview bool   `json:"disable_web_page_preview"`
+}
+
+type TgSendMessageResponse struct {
+	Ok          bool            `json:"ok"`
+	Description string          `json:"description"`
+	Result      json.RawMessage `json:"result"`
+}
+
+func sendTelegramMessage(ctx context.Context, httpc *http.Client, botToken, chatID, text string) error {
+	if strings.TrimSpace(botToken) == "" || strings.TrimSpace(chatID) == "" {
+		return fmt.Errorf("telegram creds are empty (TG_BOT_TOKEN / TG_CHAT_ID)")
+	}
+
+	// Telegram лимит по длине сообщения ~4096 символов.
+	// Чтобы не падать — порежем.
+	const maxLen = 3900
+	if len(text) > maxLen {
+		text = text[:maxLen] + "\n\n...(truncated)"
+	}
+
+	url := "https://api.telegram.org/bot" + botToken + "/sendMessage"
+
+	payload, _ := json.Marshal(TgSendMessageRequest{
+		ChatID:                chatID,
+		Text:                  text,
+		DisableWebPagePreview: true,
+	})
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("telegram http %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var tr TgSendMessageResponse
+	if err := json.Unmarshal(raw, &tr); err != nil {
+		return fmt.Errorf("telegram json decode: %w, raw=%s", err, string(raw))
+	}
+	if !tr.Ok {
+		return fmt.Errorf("telegram api not ok: %s", tr.Description)
+	}
+	return nil
+}
+
+func getMoscowLoc() *time.Location {
+	loc, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		return time.FixedZone("MSK", 3*60*60)
+	}
+	return loc
+}
+
+func yesterdayRangeRFC3339UTC() (string, string) {
+	loc := getMoscowLoc()
+	now := time.Now().In(loc)
+
+	// сегодня 00:00:00 MSK
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+
+	// вчера 00:00:00 MSK
+	yStart := todayStart.AddDate(0, 0, -1)
+	// вчера 23:59:59 MSK
+	yEnd := yStart.Add(24*time.Hour - time.Second)
+
+	// Переводим в UTC и форматируем RFC3339
+	return yStart.UTC().Format(time.RFC3339), yEnd.UTC().Format(time.RFC3339)
+}
+
+func resolveOrdersRangeRFC3339() (from, to string) {
+	useEnv := strings.EqualFold(strings.TrimSpace(os.Getenv("USE_ENV_DATES")), "true")
+	if useEnv {
+		return mustEnv("PROCESSED_FROM"), mustEnv("PROCESSED_TO")
+	}
+	return yesterdayRangeRFC3339UTC()
+}
+
 const (
 	tokenEndpoint          = "https://api-performance.ozon.ru/api/client/token"
 	ordersGenerateEndpoint = "https://api-performance.ozon.ru/api/client/statistic/orders/generate"
@@ -799,8 +890,10 @@ func main() {
 	perfSecret := mustEnv("OZON_PERF_SECRET")
 	pgDsn := mustEnv("PG_DSN")
 
-	from := mustEnv("PROCESSED_FROM")
-	to := mustEnv("PROCESSED_TO")
+	tgToken := strings.TrimSpace(os.Getenv("TG_BOT_TOKEN"))
+	tgChatID := strings.TrimSpace(os.Getenv("TG_CHAT_ID"))
+
+	from, to := resolveOrdersRangeRFC3339() // ✅ авто-вчера или env
 
 	httpc := &http.Client{Timeout: 120 * time.Second}
 
@@ -810,7 +903,7 @@ func main() {
 	}
 	fmt.Println("token ok")
 
-	raw, err := fetchOrdersGenerate(ctx, httpc, token, from, to) // POST /generate
+	raw, err := fetchOrdersGenerate(ctx, httpc, token, from, to)
 	if err != nil {
 		panic(err)
 	}
@@ -827,24 +920,11 @@ func main() {
 	}
 	fmt.Println("downloaded bytes:", len(raw2), "content-type:", ct)
 
-	_ = os.WriteFile("report.bin", raw2, 0644)
-	fmt.Println("saved: report.bin")
-
 	csvBytes, format, err := extractCSVBytes(raw2, ct)
 	if err != nil {
 		panic(err)
 	}
 	fmt.Println("report format:", format, "csv bytes:", len(csvBytes))
-
-	//header, rowsCount, err := debugCSV(csvBytes)
-	//if err != nil {
-	//	panic(err)
-	//}
-	//fmt.Println("CSV headers:")
-	//for i, h := range header {
-	//	fmt.Printf("  %d: %q\n", i, h)
-	//}
-	//fmt.Println("csv rows:", rowsCount)
 
 	orders, err := parseAdsOrdersCSV(csvBytes)
 	if err != nil {
@@ -865,4 +945,14 @@ func main() {
 		panic(err)
 	}
 	fmt.Println("done")
+
+	if tgToken != "" && tgChatID != "" {
+		text := fmt.Sprintf(
+			"ADS_Orders \nrange=%s .. %s\nuuid=%s\nformat=%s\nparsed_orders=%d",
+			from, to, task.UUID, format, len(orders),
+		)
+		if err := sendTelegramMessage(ctx, httpc, tgToken, tgChatID, text); err != nil {
+			fmt.Println("telegram send failed:", err)
+		}
+	}
 }

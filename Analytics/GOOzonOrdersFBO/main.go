@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/csv"
@@ -17,6 +18,131 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/joho/godotenv"
 )
+
+type TgSendMessageRequest struct {
+	ChatID                string `json:"chat_id"`
+	Text                  string `json:"text"`
+	DisableWebPagePreview bool   `json:"disable_web_page_preview"`
+}
+
+type TgSendMessageResponse struct {
+	Ok          bool            `json:"ok"`
+	Description string          `json:"description"`
+	Result      json.RawMessage `json:"result"`
+}
+
+func sendTelegramMessage(ctx context.Context, httpc *http.Client, botToken, chatID, text string) error {
+	if strings.TrimSpace(botToken) == "" || strings.TrimSpace(chatID) == "" {
+		return fmt.Errorf("telegram creds are empty (TG_BOT_TOKEN / TG_CHAT_ID)")
+	}
+
+	// Telegram лимит по длине сообщения ~4096 символов.
+	// Чтобы не падать — порежем.
+	const maxLen = 3900
+	if len(text) > maxLen {
+		text = text[:maxLen] + "\n\n...(truncated)"
+	}
+
+	url := "https://api.telegram.org/bot" + botToken + "/sendMessage"
+
+	payload, _ := json.Marshal(TgSendMessageRequest{
+		ChatID:                chatID,
+		Text:                  text,
+		DisableWebPagePreview: true,
+	})
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("telegram http %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var tr TgSendMessageResponse
+	if err := json.Unmarshal(raw, &tr); err != nil {
+		return fmt.Errorf("telegram json decode: %w, raw=%s", err, string(raw))
+	}
+	if !tr.Ok {
+		return fmt.Errorf("telegram api not ok: %s", tr.Description)
+	}
+	return nil
+}
+
+func getMoscowLoc() *time.Location {
+	loc, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		return time.FixedZone("MSK", 3*60*60)
+	}
+	return loc
+}
+
+func envBool(key string, def bool) bool {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	v = strings.ToLower(v)
+	return v == "1" || v == "true" || v == "yes" || v == "y"
+}
+
+// Авто: вчера по Москве (00:00..23:59:59 MSK) → возвращаем UTC диапазон
+func yesterdayRangeMoscowUTC() (time.Time, time.Time) {
+	loc := getMoscowLoc()
+	now := time.Now().In(loc)
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	yStart := todayStart.AddDate(0, 0, -1)
+	yEnd := yStart.Add(24*time.Hour - time.Second)
+	return yStart.UTC(), yEnd.UTC()
+}
+
+// Если USE_ENV_DATES=true → из PROCESSED_FROM/TO, иначе авто-вчера
+func resolveFromToUTC() (time.Time, time.Time) {
+	if envBool("USE_ENV_DATES", false) {
+		fromStr := strings.TrimSpace(os.Getenv("PROCESSED_FROM"))
+		toStr := strings.TrimSpace(os.Getenv("PROCESSED_TO"))
+		if fromStr == "" || toStr == "" {
+			panic("Need env vars: PROCESSED_FROM, PROCESSED_TO (RFC3339) when USE_ENV_DATES=true")
+		}
+
+		from, err := time.Parse(time.RFC3339, fromStr)
+		if err != nil {
+			from, err = time.Parse(time.RFC3339Nano, fromStr)
+		}
+		if err != nil {
+			panic(err)
+		}
+
+		to, err := time.Parse(time.RFC3339, toStr)
+		if err != nil {
+			to, err = time.Parse(time.RFC3339Nano, toStr)
+		}
+		if err != nil {
+			panic(err)
+		}
+
+		return from.UTC(), to.UTC()
+	}
+
+	return yesterdayRangeMoscowUTC()
+}
+
+func emptyDash(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "-"
+	}
+	return s
+}
 
 type OzonClient struct {
 	ClientID string
@@ -375,48 +501,104 @@ func main() {
 	ctx := context.Background()
 	_ = godotenv.Load("../.env")
 
-	clientID := os.Getenv("OZON_CLIENT_ID")
-	apiKey := os.Getenv("OZON_API_KEY")
-	pgDsn := os.Getenv("PG_DSN")
+	clientID := strings.TrimSpace(os.Getenv("OZON_CLIENT_ID"))
+	apiKey := strings.TrimSpace(os.Getenv("OZON_API_KEY"))
+	pgDsn := strings.TrimSpace(os.Getenv("PG_DSN"))
+
+	tgToken := strings.TrimSpace(os.Getenv("TG_BOT_TOKEN"))
+	tgChatID := strings.TrimSpace(os.Getenv("TG_CHAT_ID"))
+
+	httpc := &http.Client{Timeout: 120 * time.Second}
 
 	if clientID == "" || apiKey == "" || pgDsn == "" {
 		fmt.Println("Need env vars: OZON_CLIENT_ID, OZON_API_KEY, PG_DSN")
 		os.Exit(1)
 	}
 
-	fromStr := os.Getenv("PROCESSED_FROM")
-	toStr := os.Getenv("PROCESSED_TO")
-	if fromStr == "" || toStr == "" {
-		fmt.Println("Need env vars: PROCESSED_FROM, PROCESSED_TO (RFC3339)")
-		os.Exit(1)
-	}
-	from, err := time.Parse(time.RFC3339Nano, fromStr)
-	if err != nil {
-		panic(err)
-	}
-	to, err := time.Parse(time.RFC3339Nano, toStr)
-	if err != nil {
-		panic(err)
-	}
+	// для телеги
+	var (
+		from, to   time.Time
+		code       string
+		fileURL    string
+		parsedRows = -1
+		finalErr   error
+	)
+
+	// ✅ отчёт в телеграм при любом исходе + panic не глотаем
+	defer func() {
+		if r := recover(); r != nil {
+			switch x := r.(type) {
+			case error:
+				finalErr = x
+			default:
+				finalErr = fmt.Errorf("%v", x)
+			}
+		}
+
+		if tgToken != "" && tgChatID != "" {
+			status := "✅"
+			if finalErr != nil {
+				status = "❌"
+			}
+			if parsedRows == 0 {
+				// можно подсветить, что данных нет (не ошибка)
+				status = "⚠️"
+			}
+
+			rowsText := "n/a"
+			if parsedRows >= 0 {
+				rowsText = strconv.Itoa(parsedRows)
+			}
+
+			msk := getMoscowLoc()
+			text := fmt.Sprintf(
+				"Orders_FBO %s\nrange_utc=%s .. %s\nrange_msk=%s .. %s\nreport_code=%s\nfile=%s\nrows=%s",
+				status,
+				from.UTC().Format(time.RFC3339),
+				to.UTC().Format(time.RFC3339),
+				from.In(msk).Format("2006-01-02 15:04:05"),
+				to.In(msk).Format("2006-01-02 15:04:05"),
+				emptyDash(code),
+				emptyDash(fileURL),
+				rowsText,
+			)
+
+			if finalErr != nil {
+				text += "\nerror=" + finalErr.Error()
+			}
+
+			if err := sendTelegramMessage(ctx, httpc, tgToken, tgChatID, text); err != nil {
+				fmt.Println("telegram send failed:", err)
+			}
+		}
+
+		if finalErr != nil {
+			panic(finalErr)
+		}
+	}()
+
+	from, to = resolveFromToUTC()
+	fmt.Println("range:", from.Format(time.RFC3339), to.Format(time.RFC3339))
 
 	oz := &OzonClient{
 		ClientID: clientID,
 		APIKey:   apiKey,
-		HTTP: &http.Client{
-			Timeout: 120 * time.Second,
-		},
+		HTTP:     httpc,
 	}
 
 	// 1) create report
-	code, err := oz.CreateFBOPostingsReport(ctx, from, to)
+	var err error
+	code, err = oz.CreateFBOPostingsReport(ctx, from, to)
 	if err != nil {
+		finalErr = err
 		panic(err)
 	}
 	fmt.Println("report code:", code)
 
 	// 2) wait report ready and get CSV url
-	fileURL, err := oz.GetReportFileURLWithRetry(ctx, code, 12, 10*time.Second)
+	fileURL, err = oz.GetReportFileURLWithRetry(ctx, code, 12, 10*time.Second)
 	if err != nil {
+		finalErr = err
 		panic(err)
 	}
 	fmt.Println("report file:", fileURL)
@@ -424,6 +606,7 @@ func main() {
 	// 3) download CSV
 	body, err := downloadCSV(ctx, oz.HTTP, fileURL)
 	if err != nil {
+		finalErr = err
 		panic(err)
 	}
 	defer body.Close()
@@ -431,21 +614,17 @@ func main() {
 	r := csv.NewReader(body)
 	r.Comma = ';'
 	r.LazyQuotes = true
+	r.FieldsPerRecord = -1
 
 	// header
 	header, err := r.Read()
 	if err != nil {
+		finalErr = err
 		panic(err)
 	}
 	idx := make(map[string]int, len(header))
 	for i, h := range header {
 		idx[normHeader(h)] = i
-	}
-
-	// DEBUG: покажем заголовки
-	fmt.Println("headers:")
-	for i, h := range header {
-		fmt.Printf("  %d: %q\n", i, normHeader(h))
 	}
 
 	var orders []OrderFBO
@@ -460,11 +639,8 @@ func main() {
 			continue
 		}
 
-		// ⚠️ Тут маппинг колонок. Если у тебя в CSV другие имена — поменяешь только эти строки.
-		// Я поставил типовые названия, но Ozon может отдавать по-другому.
 		orderNumber := cleanStrPtr(getField(idx, rec, "Номер заказа"))
 		if orderNumber == nil {
-			// иногда может называться "order_number" — попробуем фоллбек
 			orderNumber = cleanStrPtr(getField(idx, rec, "order_number"))
 		}
 		if orderNumber == nil {
@@ -510,29 +686,29 @@ func main() {
 		orders = append(orders, o)
 	}
 
-	fmt.Println("parsed rows:", len(orders))
-	if len(orders) == 0 {
+	parsedRows = len(orders)
+	fmt.Println("parsed rows:", parsedRows)
+	if parsedRows == 0 {
 		fmt.Println("no data to insert")
 		return
 	}
-	//for _, row := range orders {
-	//	b, _ := json.MarshalIndent(row, "", "  ")
-	//	fmt.Println(string(b))
-	//}
 
 	// 4) connect db
 	db, err := sql.Open("pgx", pgDsn)
 	if err != nil {
+		finalErr = err
 		panic(err)
 	}
 	defer db.Close()
 
 	if err := db.PingContext(ctx); err != nil {
+		finalErr = err
 		panic(err)
 	}
 
-	//// 5) upsert
+	// 5) upsert
 	if err := upsertOrders(ctx, db, orders); err != nil {
+		finalErr = err
 		panic(err)
 	}
 

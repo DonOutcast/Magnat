@@ -16,6 +16,70 @@ import (
 	"github.com/joho/godotenv"
 )
 
+func getMoscowLoc() *time.Location {
+	loc, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		return time.FixedZone("MSK", 3*60*60)
+	}
+	return loc
+}
+
+type TgSendMessageRequest struct {
+	ChatID                string `json:"chat_id"`
+	Text                  string `json:"text"`
+	DisableWebPagePreview bool   `json:"disable_web_page_preview"`
+}
+
+type TgSendMessageResponse struct {
+	Ok          bool            `json:"ok"`
+	Description string          `json:"description"`
+	Result      json.RawMessage `json:"result"`
+}
+
+func sendTelegramMessage(ctx context.Context, httpc *http.Client, botToken, chatID, text string) error {
+	if strings.TrimSpace(botToken) == "" || strings.TrimSpace(chatID) == "" {
+		return fmt.Errorf("telegram creds are empty (TG_BOT_TOKEN / TG_CHAT_ID)")
+	}
+
+	const maxLen = 3900
+	if len(text) > maxLen {
+		text = text[:maxLen] + "\n\n...(truncated)"
+	}
+
+	url := "https://api.telegram.org/bot" + botToken + "/sendMessage"
+	payload, _ := json.Marshal(TgSendMessageRequest{
+		ChatID:                chatID,
+		Text:                  text,
+		DisableWebPagePreview: true,
+	})
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("telegram http %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var tr TgSendMessageResponse
+	if err := json.Unmarshal(raw, &tr); err != nil {
+		return fmt.Errorf("telegram json decode: %w, raw=%s", err, string(raw))
+	}
+	if !tr.Ok {
+		return fmt.Errorf("telegram api not ok: %s", tr.Description)
+	}
+	return nil
+}
+
 const ozonStocksEndpoint = "https://api-seller.ozon.ru/v1/analytics/stocks"
 
 type OzonClient struct {
@@ -344,18 +408,85 @@ func main() {
 	apiKey := mustEnv("OZON_API_KEY")
 	pgDsn := mustEnv("PG_DSN")
 
+	tgToken := strings.TrimSpace(os.Getenv("TG_BOT_TOKEN"))
+	tgChatID := strings.TrimSpace(os.Getenv("TG_CHAT_ID"))
+	httpc := &http.Client{Timeout: 120 * time.Second}
+
+	var finalErr error
+	var exportDate time.Time
+	var productsDate time.Time
+	skuCount := 0
+	totalItems := 0
+
+	defer func() {
+		if r := recover(); r != nil {
+			switch x := r.(type) {
+			case error:
+				finalErr = x
+			default:
+				finalErr = fmt.Errorf("%v", x)
+			}
+		}
+
+		if tgToken == "" || tgChatID == "" {
+			if finalErr != nil {
+				panic(finalErr)
+			}
+			return
+		}
+
+		status := "✅"
+		if finalErr != nil {
+			status = "❌"
+		}
+
+		expTxt := "-"
+		if !exportDate.IsZero() {
+			expTxt = exportDate.In(getMoscowLoc()).Format("2006-01-02")
+		}
+		prodTxt := "-"
+		if !productsDate.IsZero() {
+			prodTxt = productsDate.Format("2006-01-02")
+		}
+
+		text := fmt.Sprintf(
+			"Stock %s\nexport_date=%s\nproducts_date=%s\nskus=%d\nitems_processed=%d",
+			status,
+			expTxt,
+			prodTxt,
+			skuCount,
+			totalItems,
+		)
+		if finalErr != nil {
+			text += "\nerror=" + finalErr.Error()
+		}
+
+		if err := sendTelegramMessage(ctx, httpc, tgToken, tgChatID, text); err != nil {
+			fmt.Println("telegram send failed:", err)
+		}
+
+		if finalErr != nil {
+			panic(finalErr)
+		}
+	}()
+
 	db, err := sql.Open("pgx", pgDsn)
 	if err != nil {
+		finalErr = err
 		panic(err)
 	}
 	defer db.Close()
 	if err := db.PingContext(ctx); err != nil {
+		finalErr = err
 		panic(err)
 	}
 
-	exportDate := todayDate("Europe/Moscow")
-	productsDate, err := latestProductsDate(ctx, db)
+	// ✅ оставляем как было: "сегодня по Москве"
+	exportDate = todayDate("Europe/Moscow")
+
+	productsDate, err = latestProductsDate(ctx, db)
 	if err != nil {
+		finalErr = err
 		panic(err)
 	}
 	if productsDate.IsZero() {
@@ -365,8 +496,10 @@ func main() {
 
 	skus, err := loadSKUsForProductsDate(ctx, db, productsDate)
 	if err != nil {
+		finalErr = err
 		panic(err)
 	}
+	skuCount = len(skus)
 
 	fmt.Println("stocks export_date:", exportDate.Format("2006-01-02"))
 	fmt.Println("skus from products_date:", productsDate.Format("2006-01-02"), "count:", len(skus))
@@ -383,12 +516,12 @@ func main() {
 		},
 	}
 
-	totalInserted := 0
 	for bi, part := range batchInt64(skus, 100) {
 		fmt.Printf("batch %d: %d skus\n", bi+1, len(part))
 
 		items, err := oz.FetchStocks(ctx, part)
 		if err != nil {
+			finalErr = err
 			panic(err)
 		}
 		fmt.Println("  received items:", len(items))
@@ -400,10 +533,12 @@ func main() {
 		}
 
 		if err := upsertStocks(ctx, db, exportDate, items); err != nil {
+			finalErr = err
 			panic(err)
 		}
-		totalInserted += len(items)
+
+		totalItems += len(items)
 	}
 
-	fmt.Println("done, processed items:", totalInserted)
+	fmt.Println("done, processed items:", totalItems)
 }

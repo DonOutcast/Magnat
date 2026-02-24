@@ -19,6 +19,115 @@ import (
 	"github.com/joho/godotenv"
 )
 
+type TgSendMessageRequest struct {
+	ChatID                string `json:"chat_id"`
+	Text                  string `json:"text"`
+	DisableWebPagePreview bool   `json:"disable_web_page_preview"`
+}
+
+type TgSendMessageResponse struct {
+	Ok          bool            `json:"ok"`
+	Description string          `json:"description"`
+	Result      json.RawMessage `json:"result"`
+}
+
+func sendTelegramMessage(ctx context.Context, httpc *http.Client, botToken, chatID, text string) error {
+	if strings.TrimSpace(botToken) == "" || strings.TrimSpace(chatID) == "" {
+		return fmt.Errorf("telegram creds are empty (TG_BOT_TOKEN / TG_CHAT_ID)")
+	}
+
+	// Telegram лимит по длине сообщения ~4096 символов.
+	// Чтобы не падать — порежем.
+	const maxLen = 3900
+	if len(text) > maxLen {
+		text = text[:maxLen] + "\n\n...(truncated)"
+	}
+
+	url := "https://api.telegram.org/bot" + botToken + "/sendMessage"
+
+	payload, _ := json.Marshal(TgSendMessageRequest{
+		ChatID:                chatID,
+		Text:                  text,
+		DisableWebPagePreview: true,
+	})
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("telegram http %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var tr TgSendMessageResponse
+	if err := json.Unmarshal(raw, &tr); err != nil {
+		return fmt.Errorf("telegram json decode: %w, raw=%s", err, string(raw))
+	}
+	if !tr.Ok {
+		return fmt.Errorf("telegram api not ok: %s", tr.Description)
+	}
+	return nil
+}
+
+func getMoscowLoc() *time.Location {
+	loc, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		// fallback: фиксированный UTC+3
+		return time.FixedZone("MSK", 3*60*60)
+	}
+	return loc
+}
+
+// Вчерашний день в МСК как YYYY-MM-DD
+func getYesterdayMoscow() string {
+	loc := getMoscowLoc()
+	now := time.Now().In(loc)
+
+	// "сегодня 00:00" по Москве
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	yesterday := today.AddDate(0, 0, -1)
+	return yesterday.Format("2006-01-02")
+}
+
+// Период дат: либо из env (если включено), либо "вчера"
+func resolveDateRange() (dateFrom, dateTo string) {
+	useEnv := strings.EqualFold(strings.TrimSpace(os.Getenv("USE_ENV_DATES")), "true")
+
+	if useEnv {
+		// ручной режим
+		dateFrom = mustEnv("PROCESSED_FROM_WITHOUT_TIME")
+		dateTo = mustEnv("PROCESSED_TO_WITHOUT_TIME")
+		return
+	}
+
+	// режим крона: по умолчанию тянем только вчера
+	// Если надо — можно сделать daysBack через env
+	daysBack := 1
+	if s := strings.TrimSpace(os.Getenv("CRON_DAYS_BACK")); s != "" {
+		if v, err := strconv.Atoi(s); err == nil && v >= 1 && v <= 31 {
+			daysBack = v
+		}
+	}
+
+	loc := getMoscowLoc()
+	now := time.Now().In(loc)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+
+	from := today.AddDate(0, 0, -daysBack)
+	to := from // один день (за вчера)
+
+	return from.Format("2006-01-02"), to.Format("2006-01-02")
+}
+
 const (
 	tokenEndpoint = "https://api-performance.ozon.ru/api/client/token"
 	dailyEndpoint = "https://api-performance.ozon.ru/api/client/statistics/daily"
@@ -432,6 +541,8 @@ func main() {
 	perfClientID := mustEnv("OZON_PERF_CLIENT_ID")
 	perfSecret := mustEnv("OZON_PERF_SECRET")
 	pgDsn := mustEnv("PG_DSN")
+	tgToken := strings.TrimSpace(os.Getenv("TG_BOT_TOKEN"))
+	tgChatID := strings.TrimSpace(os.Getenv("TG_CHAT_ID"))
 
 	httpc := &http.Client{Timeout: 120 * time.Second}
 
@@ -445,8 +556,7 @@ func main() {
 	fmt.Println("token ok")
 
 	// 2) daily csv
-	dateFrom := mustEnv("PROCESSED_FROM_WITHOUT_TIME")
-	dateTo := mustEnv("PROCESSED_TO_WITHOUT_TIME")
+	dateFrom, dateTo := resolveDateRange()
 	rawCSV, err := fetchDailyCSV(ctx, httpc, token, dateFrom, dateTo)
 	//_ = os.WriteFile("daily.csv", rawCSV, 0644)
 	//fmt.Println("saved: daily.csv")
@@ -478,4 +588,9 @@ func main() {
 	}
 
 	fmt.Println("done")
+	text := fmt.Sprintf(
+		"ADS_Aggregate OK\nrange=%s..%s\naggregated_rows=%d\nexport_date=%s",
+		dateFrom, dateTo, len(rows), exportDate.Format("2006-01-02"),
+	)
+	_ = sendTelegramMessage(ctx, httpc, tgToken, tgChatID, text)
 }
