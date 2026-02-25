@@ -172,19 +172,46 @@ func (c *OzonClient) CreateProductsReport(ctx context.Context) (string, error) {
 	}
 	return out.Result.Code, nil
 }
-
 func (c *OzonClient) GetReportFileURL(ctx context.Context, code string) (string, error) {
 	payload := map[string]any{"code": code}
 	var out infoReportResp
 	if err := c.postJSON(ctx, infoReportEndpoint, payload, &out); err != nil {
 		return "", err
 	}
-	if out.Result.File == "" {
-		return "", errors.New("empty file url")
-	}
-	return out.Result.File, nil
+	return strings.TrimSpace(out.Result.File), nil
 }
 
+func (c *OzonClient) WaitReportFileURL(ctx context.Context, code string) (string, error) {
+	// max ~2-3 минуты ожидания
+	delays := []time.Duration{
+		2 * time.Second,
+		3 * time.Second,
+		5 * time.Second,
+		8 * time.Second,
+		13 * time.Second,
+		21 * time.Second,
+		34 * time.Second,
+	}
+
+	var lastEmpty bool
+	for i, d := range delays {
+		url, err := c.GetReportFileURL(ctx, code)
+		if err != nil {
+			return "", err // если реально ошибка HTTP/JSON — выходим
+		}
+		if strings.TrimSpace(url) != "" {
+			if i > 0 && lastEmpty {
+				fmt.Println("report became ready after", i, "checks")
+			}
+			return url, nil
+		}
+
+		lastEmpty = true
+		time.Sleep(d)
+	}
+
+	return "", fmt.Errorf("report file not ready (empty file url) after %d checks", len(delays))
+}
 func downloadCSV(ctx context.Context, httpClient *http.Client, url string) (io.ReadCloser, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -416,7 +443,7 @@ func main() {
 	fmt.Println("report code:", code)
 
 	// 2) get file url (если нужно — потом добавим retry)
-	fileURL, err = oz.GetReportFileURL(ctx, code)
+	fileURL, err = oz.WaitReportFileURL(ctx, code)
 	if err != nil {
 		finalErr = err
 		panic(err)
